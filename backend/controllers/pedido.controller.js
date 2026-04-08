@@ -2,46 +2,74 @@
  * ============================================
  * CONTROLADOR DE PEDIDOS
  * ============================================
- * Gestión de pedidos (checkout y consulta)
- * Requiere autenticación
+ * Gestiona el proceso de compra (checkout), consulta y cancelación de pedidos.
+ * Funciones de CLIENTE: crear pedido, ver mis pedidos, cancelar.
+ * Funciones de ADMIN: ver todos los pedidos, cambiar estado, estadísticas.
+ * Requiere autenticación (token JWT en todas las rutas).
  */
 
-// Importar modelos
+// Importa el modelo Pedido desde models/Pedido.js → tabla 'Pedido'
 const Pedido = require('../models/Pedido');
+
+// Importa el modelo DetallePedido desde models/DetallePedido.js → tabla 'DetallePedido'
+// Almacena cada producto dentro de un pedido con su cantidad y precio.
 const DetallePedido = require('../models/DetallePedido');
+
+// Importa el modelo Carrito desde models/Carrito.js → tabla 'Carrito'
+// Se usa para leer los items del carrito al crear un pedido.
 const Carrito = require('../models/Carrito');
+
+// Importa el modelo Producto desde models/Producto.js → tabla 'Producto'
+// Se usa para verificar stock y actualizar cantidades.
 const Producto = require('../models/Producto');
+
+// Importa el modelo Usuario desde models/Usuario.js → tabla 'Usuario'
+// Se usa para incluir datos del usuario en los pedidos.
 const Usuario = require('../models/Usuario');
+
+// Importa el modelo Categoria desde models/Categoria.js → tabla 'Categoria'
 const Categoria = require('../models/Categoria');
+
+// Importa el modelo Subcategoria desde models/Subcategoria.js → tabla 'Subcategoria'
 const Subcategoria = require('../models/Subcategoria');
 
 /**
- * Crear pedido desde el carrito (checkout)
+ * Crear pedido desde el carrito (checkout) - CLIENTE
  * 
- * POST /api/cliente/pedidos
- * Body: { direccionEnvio, metodoPago, notasAdicionales }
+ * Ruta: POST /api/cliente/pedidos
+ * Body JSON: { direccionEnvio, telefono, metodoPago, notasAdicionales }
  * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Proceso:
+ * 1. Valida datos de envío y método de pago
+ * 2. Obtiene items del carrito del usuario
+ * 3. Verifica stock y productos activos
+ * 4. Crea el pedido y sus detalles
+ * 5. Reduce el stock de cada producto
+ * 6. Vacía el carrito
+ * Todo dentro de una TRANSACCIÓN para garantizar consistencia.
  */
 const crearPedido = async (req, res) => {
-  // Iniciar transacción
+  // Importa la instancia de sequelize desde config/database.js para usar transacciones.
+  // Una transacción agrupa varias operaciones SQL: si una falla, TODAS se revierten.
   const { sequelize } = require('../config/database');
+  // Inicia la transacción. t es el objeto transacción que se pasa a cada operación.
   const t = await sequelize.transaction();
   
   try {
+    // Extrae datos del body JSON enviado por el frontend.
+    // metodoPago tiene valor por defecto 'efectivo' si no se envía.
     const { direccionEnvio, telefono, metodoPago = 'efectivo', notasAdicionales } = req.body;
     
-    // VALIDACIÓN 1: Dirección requerida
+    // VALIDACIÓN 1: La dirección de envío es obligatoria
     if (!direccionEnvio || direccionEnvio.trim() === '') {
-      await t.rollback();
+      await t.rollback();   // Revierte la transacción antes de responder
       return res.status(400).json({
         success: false,
         message: 'La dirección de envío es requerida'
       });
     }
     
-    // VALIDACIÓN 1b: Teléfono requerido
+    // VALIDACIÓN 1b: El teléfono es obligatorio
     if (!telefono || telefono.trim() === '') {
       await t.rollback();
       return res.status(400).json({
@@ -50,8 +78,9 @@ const crearPedido = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 2: Método de pago válido
+    // VALIDACIÓN 2: El método de pago debe ser uno de los válidos
     const metodosValidos = ['efectivo', 'tarjeta', 'transferencia'];
+    // .includes() verifica si el valor está en el array
     if (!metodosValidos.includes(metodoPago)) {
       await t.rollback();
       return res.status(400).json({
@@ -60,7 +89,9 @@ const crearPedido = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 3: Obtener items del carrito
+    // VALIDACIÓN 3: Obtiene todos los items del carrito del usuario autenticado.
+    // req.usuario.id viene del middleware de autenticación (auth.js) que decodifica el JWT.
+    // transaction: t → esta consulta es parte de la transacción.
     const itemsCarrito = await Carrito.findAll({
       where: { usuarioId: req.usuario.id },
       include: [{
@@ -71,6 +102,7 @@ const crearPedido = async (req, res) => {
       transaction: t
     });
     
+    // Si el carrito está vacío, no se puede crear un pedido
     if (itemsCarrito.length === 0) {
       await t.rollback();
       return res.status(400).json({
@@ -79,20 +111,22 @@ const crearPedido = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 4: Verificar stock y productos activos
+    // VALIDACIÓN 4: Recorre cada item para verificar stock y estado del producto.
+    // erroresValidacion acumula los errores encontrados para mostrarlos todos juntos.
     const erroresValidacion = [];
-    let totalPedido = 0;
+    let totalPedido = 0;        // Acumulador del total del pedido
     
+    // Recorre cada item del carrito con un for...of (permite await dentro)
     for (const item of itemsCarrito) {
-      const producto = item.producto;
+      const producto = item.producto;     // Producto asociado al item (por el include)
       
-      // Verificar que el producto está activo
+      // Verifica que el producto siga activo (pudo desactivarse después de agregarlo al carrito)
       if (!producto.activo) {
         erroresValidacion.push(`${producto.nombre} ya no está disponible`);
-        continue;
+        continue;    // Salta al siguiente item
       }
       
-      // Verificar stock suficiente
+      // Verifica que haya stock suficiente para la cantidad solicitada
       if (item.cantidad > producto.stock) {
         erroresValidacion.push(
           `${producto.nombre}: stock insuficiente (disponible: ${producto.stock}, solicitado: ${item.cantidad})`
@@ -100,11 +134,11 @@ const crearPedido = async (req, res) => {
         continue;
       }
       
-      // Calcular total
+      // Suma al total del pedido: precioUnitario × cantidad
       totalPedido += parseFloat(item.precioUnitario) * item.cantidad;
     }
     
-    // Si hay errores de validación, retornar
+    // Si hubo errores de validación en algún producto, revierte y muestra todos los errores
     if (erroresValidacion.length > 0) {
       await t.rollback();
       return res.status(400).json({
@@ -114,55 +148,58 @@ const crearPedido = async (req, res) => {
       });
     }
     
-    // CREAR PEDIDO
+    // CREAR EL PEDIDO → INSERT INTO Pedido (...)
     const pedido = await Pedido.create({
-      usuarioId: req.usuario.id,
-      total: totalPedido,
-      estado: 'pendiente',
-      direccionEnvio,
-      telefono,
-      metodoPago,
-      notasAdicionales
-    }, { transaction: t });
+      usuarioId: req.usuario.id,     // ID del usuario autenticado
+      total: totalPedido,            // Total calculado arriba
+      estado: 'pendiente',           // Estado inicial del pedido
+      direccionEnvio,                // Dirección enviada por el usuario
+      telefono,                      // Teléfono de contacto
+      metodoPago,                    // 'efectivo', 'tarjeta' o 'transferencia'
+      notasAdicionales               // Notas opcionales
+    }, { transaction: t });          // Parte de la transacción
     
     // CREAR DETALLES DEL PEDIDO Y ACTUALIZAR STOCK
-    const detallesPedido = [];
+    const detallesPedido = [];    // Array para guardar los detalles creados
     
     for (const item of itemsCarrito) {
       const producto = item.producto;
       
-      // Crear detalle
+      // Crea un registro en DetallePedido por cada producto del carrito
       const detalle = await DetallePedido.create({
-        pedidoId: pedido.id,
-        productoId: producto.id,
-        cantidad: item.cantidad,
-        precioUnitario: item.precioUnitario,
-        subtotal: parseFloat(item.precioUnitario) * item.cantidad
+        pedidoId: pedido.id,                                  // FK al pedido recién creado
+        productoId: producto.id,                              // FK al producto
+        cantidad: item.cantidad,                              // Cantidad solicitada
+        precioUnitario: item.precioUnitario,                  // Precio al momento de la compra
+        subtotal: parseFloat(item.precioUnitario) * item.cantidad  // Subtotal de este item
       }, { transaction: t });
       
-      detallesPedido.push(detalle);
+      detallesPedido.push(detalle);   // Agrega al array de detalles
       
-      // Reducir stock del producto
+      // Reduce el stock del producto según la cantidad comprada
       producto.stock -= item.cantidad;
-      await producto.save({ transaction: t });
+      await producto.save({ transaction: t });   // Guarda el nuevo stock
     }
     
-    // VACIAR EL CARRITO
+    // VACIAR EL CARRITO del usuario después de crear el pedido.
+    // destroy() con where elimina todos los registros que coincidan.
     await Carrito.destroy({
       where: { usuarioId: req.usuario.id },
       transaction: t
     });
     
-    // CONFIRMAR TRANSACCIÓN
+    // CONFIRMAR TRANSACCIÓN → ejecuta todos los cambios en la BD de forma permanente.
+    // Si algo hubiera fallado antes, t.rollback() habría revertido todo.
     await t.commit();
     
-    // Recargar pedido con relaciones
+    // Recarga el pedido con sus relaciones para enviar la respuesta completa.
+    // reload() vuelve a consultar la BD con los includes especificados.
     await pedido.reload({
       include: [
         {
           model: Usuario,
           as: 'usuario',
-          attributes: ['id', 'nombre', 'email']
+          attributes: ['id', 'nombre', 'email']   // Datos del usuario
         },
         {
           model: DetallePedido,
@@ -170,13 +207,13 @@ const crearPedido = async (req, res) => {
           include: [{
             model: Producto,
             as: 'producto',
-            attributes: ['id', 'nombre', 'precio', 'imagen']
+            attributes: ['id', 'nombre', 'precio', 'imagen']   // Datos del producto
           }]
         }
       ]
     });
     
-    // RESPUESTA EXITOSA
+    // 201 = Created. Pedido creado exitosamente.
     res.status(201).json({
       success: true,
       message: 'Pedido creado exitosamente',
@@ -186,7 +223,7 @@ const crearPedido = async (req, res) => {
     });
     
   } catch (error) {
-    // Revertir transacción en caso de error
+    // Si ocurre cualquier error inesperado, revierte TODA la transacción
     await t.rollback();
     console.error('Error en crearPedido:', error);
     res.status(500).json({
@@ -198,45 +235,45 @@ const crearPedido = async (req, res) => {
 };
 
 /**
- * Obtener pedidos del usuario autenticado
+ * Obtener pedidos del usuario autenticado - CLIENTE
  * 
- * GET /api/cliente/pedidos
- * Query: ?estado=pendiente&pagina=1&limite=10
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/cliente/pedidos
+ * Query params: ?estado=pendiente&pagina=1&limite=10
  */
 const getMisPedidos = async (req, res) => {
   try {
+    // Extrae filtro de estado y paginación de los query params
     const { estado, pagina = 1, limite = 10 } = req.query;
     
-    // Filtros
+    // Filtro base: solo los pedidos del usuario autenticado
     const where = { usuarioId: req.usuario.id };
+    // Si se envía filtro de estado, lo agrega al WHERE
     if (estado) where.estado = estado;
     
-    // Paginación
+    // Calcula el offset para paginación
     const offset = (parseInt(pagina) - 1) * parseInt(limite);
     
-    // Consultar pedidos
+    // Consulta pedidos con paginación.
+    // findAndCountAll retorna { count: total, rows: registros }
     const { count, rows: pedidos } = await Pedido.findAndCountAll({
       where,
       include: [
         {
           model: DetallePedido,
-          as: 'detalles',
+          as: 'detalles',           // Detalles de cada pedido
           include: [{
             model: Producto,
             as: 'producto',
-            attributes: ['id', 'nombre', 'imagen']
+            attributes: ['id', 'nombre', 'imagen']   // Solo datos básicos del producto
           }]
         }
       ],
       limit: parseInt(limite),
       offset,
-      order: [['createdAt', 'DESC']]
+      order: [['createdAt', 'DESC']]    // Más recientes primero
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con los pedidos y la paginación
     res.json({
       success: true,
       data: {
@@ -261,26 +298,23 @@ const getMisPedidos = async (req, res) => {
 };
 
 /**
- * Obtener un pedido específico por ID
+ * Obtener un pedido específico por ID - CLIENTE / ADMIN
  * 
- * GET /api/cliente/pedidos/:id
- * 
- * Solo puede ver sus propios pedidos (o admin puede ver cualquiera)
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/cliente/pedidos/:id
+ * El cliente solo ve sus pedidos, el admin puede ver cualquiera.
  */
 const getPedidoById = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Construir filtros (cliente solo ve sus pedidos, admin ve todos)
+    // Construye filtro: siempre filtra por ID del pedido.
     const where = { id };
+    // Si NO es administrador, agrega filtro por usuarioId (solo ve sus pedidos).
     if (req.usuario.rol !== 'administrador') {
       where.usuarioId = req.usuario.id;
     }
     
-    // Buscar pedido
+    // Busca el pedido con todos sus detalles y relaciones
     const pedido = await Pedido.findOne({
       where,
       include: [
@@ -298,12 +332,12 @@ const getPedidoById = async (req, res) => {
             attributes: ['id', 'nombre', 'descripcion', 'precio', 'imagen'],
             include: [
               {
-                model: Categoria,
+                model: Categoria,            // Categoría del producto
                 as: 'categoria',
                 attributes: ['id', 'nombre']
               },
               {
-                model: Subcategoria,
+                model: Subcategoria,         // Subcategoría del producto
                 as: 'subcategoria',
                 attributes: ['id', 'nombre']
               }
@@ -313,6 +347,7 @@ const getPedidoById = async (req, res) => {
       ]
     });
     
+    // Si no encontró el pedido (no existe o no pertenece al usuario)
     if (!pedido) {
       return res.status(404).json({
         success: false,
@@ -320,7 +355,7 @@ const getPedidoById = async (req, res) => {
       });
     }
     
-    // RESPUESTA EXITOSA
+    // Responde con el pedido completo
     res.json({
       success: true,
       data: {
@@ -339,35 +374,34 @@ const getPedidoById = async (req, res) => {
 };
 
 /**
- * Cancelar un pedido
+ * Cancelar un pedido - CLIENTE
  * 
- * PUT /api/cliente/pedidos/:id/cancelar
- * 
- * Solo se puede cancelar si está en estado 'pendiente'
- * Devuelve el stock a los productos
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PUT /api/cliente/pedidos/:id/cancelar
+ * Solo se puede cancelar si está en estado 'pendiente'.
+ * Al cancelar, devuelve el stock a los productos.
+ * Usa transacción para garantizar consistencia.
  */
 const cancelarPedido = async (req, res) => {
+  // Importa sequelize para usar transacciones
   const { sequelize } = require('../config/database');
-  const t = await sequelize.transaction();
+  const t = await sequelize.transaction();   // Inicia transacción
   
   try {
     const { id } = req.params;
     
-    // Buscar pedido (solo sus propios pedidos)
+    // Busca el pedido del usuario autenticado con sus detalles y productos.
+    // El WHERE filtra por ID del pedido Y por el ID del usuario (seguridad: no puede cancelar pedidos ajenos).
     const pedido = await Pedido.findOne({
       where: {
         id,
-        usuarioId: req.usuario.id
+        usuarioId: req.usuario.id    // Solo sus propios pedidos
       },
       include: [{
         model: DetallePedido,
         as: 'detalles',
         include: [{
           model: Producto,
-          as: 'producto'
+          as: 'producto'              // Producto completo para actualizar stock
         }]
       }],
       transaction: t
@@ -381,7 +415,7 @@ const cancelarPedido = async (req, res) => {
       });
     }
     
-    // Solo se puede cancelar si está pendiente
+    // Solo se puede cancelar un pedido que esté en estado 'pendiente'
     if (pedido.estado !== 'pendiente') {
       await t.rollback();
       return res.status(400).json({
@@ -390,20 +424,21 @@ const cancelarPedido = async (req, res) => {
       });
     }
     
-    // Devolver stock a los productos
+    // DEVOLVER STOCK: recorre cada detalle del pedido y suma la cantidad al stock del producto.
     for (const detalle of pedido.detalles) {
       const producto = detalle.producto;
-      producto.stock += detalle.cantidad;
+      producto.stock += detalle.cantidad;    // Devuelve la cantidad al stock
       await producto.save({ transaction: t });
     }
     
-    // Actualizar estado del pedido
+    // Cambia el estado del pedido a 'cancelado'
     pedido.estado = 'cancelado';
     await pedido.save({ transaction: t });
     
+    // Confirma la transacción → todos los cambios se aplican permanentemente
     await t.commit();
     
-    // RESPUESTA EXITOSA
+    // Responde confirmando la cancelación
     res.json({
       success: true,
       message: 'Pedido cancelado exitosamente',
@@ -413,7 +448,7 @@ const cancelarPedido = async (req, res) => {
     });
     
   } catch (error) {
-    await t.rollback();
+    await t.rollback();    // Revierte todo si hay error
     console.error('Error en cancelarPedido:', error);
     res.status(500).json({
       success: false,
@@ -424,34 +459,32 @@ const cancelarPedido = async (req, res) => {
 };
 
 /**
- * ADMIN: Obtener todos los pedidos
+ * Obtener todos los pedidos - ADMIN
  * 
- * GET /api/admin/pedidos
- * Query: ?estado=pendiente&usuarioId=1&pagina=1&limite=20
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/pedidos
+ * Query params: ?estado=pendiente&usuarioId=1&pagina=1&limite=20
+ * El admin puede ver pedidos de todos los usuarios.
  */
 const getAllPedidos = async (req, res) => {
   try {
+    // Extrae filtros y paginación de los query params
     const { estado, usuarioId, pagina = 1, limite = 20 } = req.query;
     
-    // Filtros
+    // Construye filtros dinámicamente según lo que se envíe
     const where = {};
-    if (estado) where.estado = estado;
-    if (usuarioId) where.usuarioId = usuarioId;
+    if (estado) where.estado = estado;           // Filtro por estado
+    if (usuarioId) where.usuarioId = usuarioId;  // Filtro por usuario específico
     
-    // Paginación
     const offset = (parseInt(pagina) - 1) * parseInt(limite);
     
-    // Consultar pedidos
+    // Consulta todos los pedidos con datos del usuario y detalles
     const { count, rows: pedidos } = await Pedido.findAndCountAll({
       where,
       include: [
         {
           model: Usuario,
           as: 'usuario',
-          attributes: ['id', 'nombre', 'email']
+          attributes: ['id', 'nombre', 'email']    // Datos del usuario que hizo el pedido
         },
         {
           model: DetallePedido,
@@ -465,10 +498,10 @@ const getAllPedidos = async (req, res) => {
       ],
       limit: parseInt(limite),
       offset,
-      order: [['createdAt', 'DESC']]
+      order: [['createdAt', 'DESC']]     // Más recientes primero
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con todos los pedidos y la paginación
     res.json({
       success: true,
       data: {
@@ -493,31 +526,28 @@ const getAllPedidos = async (req, res) => {
 };
 
 /**
- * ADMIN: Actualizar estado de un pedido
+ * Actualizar estado de un pedido - ADMIN
  * 
- * PUT /api/admin/pedidos/:id/estado
- * Body: { estado }
- * 
- * Estados: 'pendiente' | 'en_proceso' | 'enviado' | 'entregado' | 'cancelado'
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PUT /api/admin/pedidos/:id/estado
+ * Body JSON: { estado }
+ * Estados válidos: 'pendiente' | 'en_proceso' | 'enviado' | 'entregado' | 'cancelado'
  */
 const actualizarEstadoPedido = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { estado } = req.body;
+    const { id } = req.params;       // ID del pedido desde la URL
+    const { estado } = req.body;      // Nuevo estado desde el body JSON
     
-    // Validar estado
+    // Valida que el estado sea uno de los permitidos
     const estadosValidos = ['pendiente', 'en_proceso', 'enviado', 'entregado', 'cancelado'];
     if (!estadosValidos.includes(estado)) {
       return res.status(400).json({
         success: false,
+        // .join(', ') une los elementos del array con coma: "pendiente, en_proceso, ..."
         message: `Estado inválido. Opciones: ${estadosValidos.join(', ')}`
       });
     }
     
-    // Buscar pedido
+    // Busca el pedido por su clave primaria
     const pedido = await Pedido.findByPk(id);
     
     if (!pedido) {
@@ -527,11 +557,11 @@ const actualizarEstadoPedido = async (req, res) => {
       });
     }
     
-    // Actualizar estado
+    // Actualiza el estado del pedido
     pedido.estado = estado;
     await pedido.save();
     
-    // Recargar con relaciones
+    // Recarga el pedido con los datos del usuario incluidos
     await pedido.reload({
       include: [
         {
@@ -542,7 +572,7 @@ const actualizarEstadoPedido = async (req, res) => {
       ]
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con el pedido actualizado
     res.json({
       success: true,
       message: 'Estado del pedido actualizado',
@@ -562,52 +592,60 @@ const actualizarEstadoPedido = async (req, res) => {
 };
 
 /**
- * ADMIN: Obtener estadísticas de pedidos
+ * Obtener estadísticas de pedidos - ADMIN
  * 
- * GET /api/admin/pedidos/estadisticas
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/pedidos/estadisticas
+ * Retorna: total de pedidos, pedidos hoy, ventas totales, pedidos agrupados por estado.
  */
 const getEstadisticasPedidos = async (req, res) => {
   try {
+    // Importa operadores y funciones de agregación de Sequelize.
+    // Op: operadores (Op.gte = >=)
+    // fn: funciones SQL (COUNT, SUM)
+    // col: referencia a columnas de la tabla
     const { Op, fn, col } = require('sequelize');
     
-    // Total de pedidos
+    // Cuenta el total de pedidos en la BD
     const totalPedidos = await Pedido.count();
     
-    // Pedidos por estado
+    // Agrupa pedidos por estado y calcula cantidad y total de ventas por cada estado.
+    // Equivale a: SELECT estado, COUNT(id) as cantidad, SUM(total) as totalVentas FROM Pedido GROUP BY estado
     const pedidosPorEstado = await Pedido.findAll({
       attributes: [
-        'estado',
-        [fn('COUNT', col('id')), 'cantidad'],
-        [fn('SUM', col('total')), 'totalVentas']
+        'estado',                                        // Campo por el que agrupa
+        [fn('COUNT', col('id')), 'cantidad'],            // COUNT(id) → alias 'cantidad'
+        [fn('SUM', col('total')), 'totalVentas']         // SUM(total) → alias 'totalVentas'
       ],
-      group: ['estado']
+      group: ['estado']     // GROUP BY estado
     });
     
-    // Total de ventas
+    // Suma el campo 'total' de TODOS los pedidos (ventas acumuladas)
     const ventasTotales = await Pedido.sum('total');
     
-    // Pedidos hoy
+    // Calcula la fecha de hoy a las 00:00:00 para contar pedidos del día
     const hoy = new Date();
-    hoy.setHours(0, 0, 0, 0);
+    hoy.setHours(0, 0, 0, 0);   // Establece hora a medianoche
     
+    // Cuenta pedidos creados desde hoy a las 00:00
+    // Op.gte = greater than or equal (>=)
     const pedidosHoy = await Pedido.count({
       where: {
-        createdAt: { [Op.gte]: hoy }
+        createdAt: { [Op.gte]: hoy }    // createdAt >= hoy a las 00:00
       }
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con todas las estadísticas
     res.json({
       success: true,
       data: {
-        totalPedidos,
-        pedidosHoy,
+        totalPedidos,                    // Total de pedidos
+        pedidosHoy,                      // Pedidos creados hoy
+        // Si no hay ventas (null), usa 0. toFixed(2) formatea a 2 decimales.
         ventasTotales: parseFloat(ventasTotales || 0).toFixed(2),
+        // Transforma cada resultado de la agrupación a un formato limpio
         pedidosPorEstado: pedidosPorEstado.map(p => ({
           estado: p.estado,
+          // getDataValue() obtiene el valor de un campo virtual (alias del SQL)
           cantidad: parseInt(p.getDataValue('cantidad')),
           totalVentas: parseFloat(p.getDataValue('totalVentas') || 0).toFixed(2)
         }))
@@ -624,16 +662,16 @@ const getEstadisticasPedidos = async (req, res) => {
   }
 };
 
-// Exportar controladores
+// Exporta todas las funciones del controlador para usarlas en las rutas.
 module.exports = {
-  // Cliente
-  crearPedido,
-  getMisPedidos,
-  getPedidoById,
-  cancelarPedido,
+  // Funciones de CLIENTE (rutas en routes/cliente.routes.js)
+  crearPedido,               // POST /api/cliente/pedidos - Checkout
+  getMisPedidos,             // GET  /api/cliente/pedidos - Mis pedidos
+  getPedidoById,             // GET  /api/cliente/pedidos/:id - Detalle de un pedido
+  cancelarPedido,            // PUT  /api/cliente/pedidos/:id/cancelar - Cancelar pedido
   
-  // Admin
-  getAllPedidos,
-  actualizarEstadoPedido,
-  getEstadisticasPedidos
+  // Funciones de ADMIN (rutas en routes/admin.routes.js)
+  getAllPedidos,              // GET /api/admin/pedidos - Todos los pedidos
+  actualizarEstadoPedido,    // PUT /api/admin/pedidos/:id/estado - Cambiar estado
+  getEstadisticasPedidos     // GET /api/admin/pedidos/estadisticas - Dashboard
 };

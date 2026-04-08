@@ -1,57 +1,65 @@
 /**
  * ============================================
- * CONTROLADOR DE CATEGORÍAS
+ * CONTROLADOR DE CATEGORÍAS (Admin)
  * ============================================
- * Maneja las operaciones CRUD de categorías
- * Solo accesible por administradores
+ * CRUD completo de categorías, estadísticas y toggle activar/desactivar.
+ * Solo accesible por administradores (protegido por middleware checkRole).
+ * Las rutas están definidas en routes/admin.routes.js
  */
 
-// Importar modelos
+// Importa el modelo Categoria desde models/Categoria.js
+// Representa la tabla 'Categoria' en la BD.
 const Categoria = require('../models/Categoria');
+
+// Importa el modelo Subcategoria desde models/Subcategoria.js
+// Representa la tabla 'Subcategoria' en la BD.
 const Subcategoria = require('../models/Subcategoria');
+
+// Importa el modelo Producto desde models/Producto.js
+// Representa la tabla 'Producto' en la BD.
 const Producto = require('../models/Producto');
 
 /**
- * Obtener todas las categorías
+ * Obtener todas las categorías (admin)
  * 
- * GET /api/admin/categorias
- * Query params:
- * - activo: true/false (filtrar por estado)
- * - incluirSubcategorias: true/false (incluir subcategorías relacionadas)
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/categorias
+ * Query params opcionales:
+ * - activo: 'true'/'false' → filtrar por estado
+ * - incluirSubcategorias: 'true' → incluir subcategorías en la respuesta
  */
 const getCategorias = async (req, res) => {
   try {
+    // Extrae los query params de la URL (?activo=true&incluirSubcategorias=true)
     const { activo, incluirSubcategorias } = req.query;
     
-    // Opciones de consulta
+    // Objeto de opciones para la consulta Sequelize.
+    // order define el ORDER BY en SQL → orden alfabético A-Z
     const opciones = {
-      order: [['nombre', 'ASC']] // Ordenar alfabéticamente
+      order: [['nombre', 'ASC']]
     };
     
-    // Filtrar por estado activo si se especifica
+    // Si se envió el parámetro 'activo', agrega filtro WHERE.
+    // activo === 'true' convierte el string a booleano (query params siempre son strings)
     if (activo !== undefined) {
       opciones.where = { activo: activo === 'true' };
     }
     
-    // Incluir subcategorías si se solicita
+    // Si se pidió incluir subcategorías, agrega un JOIN con la tabla Subcategoria
     if (incluirSubcategorias === 'true') {
       opciones.include = [{
-        model: Subcategoria,
-        as: 'subcategorias',
-        attributes: ['id', 'nombre', 'descripcion', 'activo']
+        model: Subcategoria,          // Modelo a unir (JOIN)
+        as: 'subcategorias',          // Alias de la relación (definido en el modelo)
+        attributes: ['id', 'nombre', 'descripcion', 'activo']  // Solo estos campos
       }];
     }
     
-    // Obtener categorías
+    // Ejecuta SELECT * FROM Categoria con las opciones armadas arriba
     const categorias = await Categoria.findAll(opciones);
     
-    // RESPUESTA EXITOSA
+    // Responde con las categorías encontradas
     res.json({
       success: true,
-      count: categorias.length,
+      count: categorias.length,       // Cantidad total de categorías
       data: {
         categorias
       }
@@ -68,18 +76,18 @@ const getCategorias = async (req, res) => {
 };
 
 /**
- * Obtener una categoría por ID
+ * Obtener una categoría por ID (admin)
  * 
- * GET /api/admin/categorias/:id
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/categorias/:id
+ * Incluye subcategorías y cuenta de productos asociados.
  */
 const getCategoriaById = async (req, res) => {
   try {
+    // Obtiene el ID de la categoría de los parámetros de ruta
     const { id } = req.params;
     
-    // Buscar categoría con subcategorías y contar productos
+    // findByPk() busca por Primary Key (clave primaria = id).
+    // include hace JOINs con Subcategoria y Producto.
     const categoria = await Categoria.findByPk(id, {
       include: [
         {
@@ -90,11 +98,12 @@ const getCategoriaById = async (req, res) => {
         {
           model: Producto,
           as: 'productos',
-          attributes: ['id']
+          attributes: ['id']   // Solo traemos el id para contar
         }
       ]
     });
     
+    // Si no existe la categoría con ese ID
     if (!categoria) {
       return res.status(404).json({
         success: false,
@@ -102,12 +111,14 @@ const getCategoriaById = async (req, res) => {
       });
     }
     
-    // Agregar contador de productos
+    // Convierte la instancia Sequelize a un objeto JavaScript plano
     const categoriaJSON = categoria.toJSON();
+    // Agrega un campo totalProductos contando los productos incluidos
     categoriaJSON.totalProductos = categoriaJSON.productos.length;
-    delete categoriaJSON.productos; // No enviar la lista completa, solo el contador
+    // Elimina el array de productos para no enviar la lista completa, solo el contador
+    delete categoriaJSON.productos;
     
-    // RESPUESTA EXITOSA
+    // Responde con la categoría y sus subcategorías
     res.json({
       success: true,
       data: {
@@ -126,31 +137,31 @@ const getCategoriaById = async (req, res) => {
 };
 
 /**
- * Crear nueva categoría
+ * Crear nueva categoría (admin)
  * 
- * POST /api/admin/categorias
- * Body: { nombre, descripcion }
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: POST /api/admin/categorias
+ * Body JSON: { nombre, descripcion }
  */
 const crearCategoria = async (req, res) => {
   try {
+    // Extrae nombre y descripcion del cuerpo de la petición (JSON enviado por el frontend)
     const { nombre, descripcion } = req.body;
     
-    // VALIDACIÓN 1: Verificar campos requeridos
+    // VALIDACIÓN 1: El nombre es obligatorio
     if (!nombre) {
-      return res.status(400).json({
+      return res.status(400).json({     // 400 = Bad Request
         success: false,
         message: 'El nombre de la categoría es requerido'
       });
     }
     
-    // VALIDACIÓN 2: Verificar que el nombre no exista
+    // VALIDACIÓN 2: Verifica que no exista otra categoría con el mismo nombre.
+    // findOne() busca UN registro que coincida con el WHERE.
     const categoriaExistente = await Categoria.findOne({ 
       where: { nombre } 
     });
     
+    // Si ya existe una con ese nombre, rechaza la creación
     if (categoriaExistente) {
       return res.status(400).json({
         success: false,
@@ -158,14 +169,14 @@ const crearCategoria = async (req, res) => {
       });
     }
     
-    // CREAR CATEGORÍA
+    // Crea el registro en la tabla Categoria (INSERT INTO Categoria ...)
     const nuevaCategoria = await Categoria.create({
-      nombre,
-      descripcion: descripcion || null,
-      activo: true
+      nombre,                          // Nombre de la categoría
+      descripcion: descripcion || null, // Descripción opcional, null si no se envía
+      activo: true                      // Se crea como activa por defecto
     });
     
-    // RESPUESTA EXITOSA
+    // 201 = Created. Indica que se creó un recurso nuevo exitosamente.
     res.status(201).json({
       success: true,
       message: 'Categoría creada exitosamente',
@@ -177,11 +188,12 @@ const crearCategoria = async (req, res) => {
   } catch (error) {
     console.error('Error en crearCategoria:', error);
     
-    // Error de validación de Sequelize
+    // Captura errores de validación del modelo Sequelize (validaciones definidas en el modelo)
     if (error.name === 'SequelizeValidationError') {
       return res.status(400).json({
         success: false,
         message: 'Errores de validación',
+        // Extrae solo los mensajes de error de cada validación fallida
         errors: error.errors.map(e => e.message)
       });
     }
@@ -195,20 +207,18 @@ const crearCategoria = async (req, res) => {
 };
 
 /**
- * Actualizar categoría
+ * Actualizar categoría existente (admin)
  * 
- * PUT /api/admin/categorias/:id
- * Body: { nombre, descripcion }
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PUT /api/admin/categorias/:id
+ * Body JSON: { nombre, descripcion, activo }
  */
 const actualizarCategoria = async (req, res) => {
   try {
+    // ID de la categoría desde la URL, campos a actualizar desde el body
     const { id } = req.params;
     const { nombre, descripcion, activo } = req.body;
     
-    // Buscar categoría
+    // Busca la categoría por su clave primaria
     const categoria = await Categoria.findByPk(id);
     
     if (!categoria) {
@@ -218,7 +228,7 @@ const actualizarCategoria = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN: Si se cambia el nombre, verificar que no exista
+    // VALIDACIÓN: Si se quiere cambiar el nombre, verifica que el nuevo nombre no exista ya
     if (nombre && nombre !== categoria.nombre) {
       const categoriaConMismoNombre = await Categoria.findOne({
         where: { nombre }
@@ -232,15 +242,17 @@ const actualizarCategoria = async (req, res) => {
       }
     }
     
-    // ACTUALIZAR CAMPOS
+    // Actualiza SOLO los campos que se enviaron (si no se envían, no cambian).
+    // !== undefined verifica que el campo fue incluido en el body.
     if (nombre !== undefined) categoria.nombre = nombre;
     if (descripcion !== undefined) categoria.descripcion = descripcion;
     if (activo !== undefined) categoria.activo = activo;
     
-    // Guardar cambios
+    // save() ejecuta un UPDATE en la BD con los campos modificados.
+    // También dispara los hooks del modelo (ej: afterUpdate para cascada).
     await categoria.save();
     
-    // RESPUESTA EXITOSA
+    // Responde con la categoría actualizada
     res.json({
       success: true,
       message: 'Categoría actualizada exitosamente',
@@ -252,6 +264,7 @@ const actualizarCategoria = async (req, res) => {
   } catch (error) {
     console.error('Error en actualizarCategoria:', error);
     
+    // Captura errores de validación del modelo Sequelize
     if (error.name === 'SequelizeValidationError') {
       return res.status(400).json({
         success: false,
@@ -269,22 +282,18 @@ const actualizarCategoria = async (req, res) => {
 };
 
 /**
- * Activar/Desactivar categoría
+ * Activar/Desactivar categoría (toggle) (admin)
  * 
- * PATCH /api/admin/categorias/:id/toggle
+ * Ruta: PATCH /api/admin/categorias/:id/toggle
  * 
- * IMPORTANTE: Al desactivar una categoría:
- * - Se desactivan todas sus subcategorías (hook afterUpdate)
- * - Se desactivan todos sus productos (hook afterUpdate de subcategoría)
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * IMPORTANTE: Al desactivar una categoría, el hook afterUpdate
+ * del modelo desactiva en cascada todas sus subcategorías y productos.
  */
 const toggleCategoria = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Buscar categoría
+    // Busca la categoría por su ID
     const categoria = await Categoria.findByPk(id);
     
     if (!categoria) {
@@ -294,14 +303,15 @@ const toggleCategoria = async (req, res) => {
       });
     }
     
-    // Alter nar estado activo
+    // Invierte el estado activo: si era true pasa a false y viceversa
     const nuevoEstado = !categoria.activo;
     categoria.activo = nuevoEstado;
     
-    // Guardar cambios (el hook afterUpdate se encargará de la cascada)
+    // save() guarda el cambio y dispara el hook afterUpdate del modelo.
+    // Ese hook se encarga de desactivar/activar subcategorías y productos en cascada.
     await categoria.save();
     
-    // Contar cuántos registros se afectaron
+    // Cuenta subcategorías y productos afectados por el cambio en cascada
     const subcategoriasAfectadas = await Subcategoria.count({
       where: { categoriaId: id }
     });
@@ -310,15 +320,16 @@ const toggleCategoria = async (req, res) => {
       where: { categoriaId: id }
     });
     
-    // RESPUESTA EXITOSA
+    // Responde indicando el nuevo estado y cuántos registros se afectaron
     res.json({
       success: true,
+      // Ternario: si nuevoEstado es true → 'activada', si es false → 'desactivada'
       message: `Categoría ${nuevoEstado ? 'activada' : 'desactivada'} exitosamente`,
       data: {
         categoria,
         afectados: {
-          subcategorias: subcategoriasAfectadas,
-          productos: productosAfectados
+          subcategorias: subcategoriasAfectadas,   // Subcategorías afectadas
+          productos: productosAfectados             // Productos afectados
         }
       }
     });
@@ -334,21 +345,18 @@ const toggleCategoria = async (req, res) => {
 };
 
 /**
- * Eliminar categoría
+ * Eliminar categoría (admin)
  * 
- * DELETE /api/admin/categorias/:id
+ * Ruta: DELETE /api/admin/categorias/:id
  * 
- * IMPORTANTE: Solo se puede eliminar si no tiene subcategorías o productos
- * Si tiene registros relacionados, se debe desactivar en lugar de eliminar
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Solo se puede eliminar si NO tiene subcategorías ni productos asociados.
+ * Si tiene registros hijos, se recomienda desactivar en vez de eliminar.
  */
 const eliminarCategoria = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Buscar categoría
+    // Busca la categoría por ID
     const categoria = await Categoria.findByPk(id);
     
     if (!categoria) {
@@ -358,11 +366,12 @@ const eliminarCategoria = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN: Verificar que no tenga subcategorías
+    // VALIDACIÓN 1: Cuenta subcategorías asociadas a esta categoría
     const subcategorias = await Subcategoria.count({
       where: { categoriaId: id }
     });
     
+    // Si tiene subcategorías, no se puede eliminar (integridad referencial)
     if (subcategorias > 0) {
       return res.status(400).json({
         success: false,
@@ -371,11 +380,12 @@ const eliminarCategoria = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN: Verificar que no tenga productos
+    // VALIDACIÓN 2: Cuenta productos asociados a esta categoría
     const productos = await Producto.count({
       where: { categoriaId: id }
     });
     
+    // Si tiene productos, no se puede eliminar
     if (productos > 0) {
       return res.status(400).json({
         success: false,
@@ -384,10 +394,10 @@ const eliminarCategoria = async (req, res) => {
       });
     }
     
-    // ELIMINAR CATEGORÍA
+    // destroy() ejecuta DELETE FROM Categoria WHERE id = :id
     await categoria.destroy();
     
-    // RESPUESTA EXITOSA
+    // Responde confirmando la eliminación
     res.json({
       success: true,
       message: 'Categoría eliminada exitosamente'
@@ -404,24 +414,17 @@ const eliminarCategoria = async (req, res) => {
 };
 
 /**
- * Obtener estadísticas de una categoría
+ * Obtener estadísticas de una categoría (admin)
  * 
- * GET /api/admin/categorias/:id/stats
- * 
- * Retorna:
- * - Total de subcategorías (activas e inactivas)
- * - Total de productos (activos e inactivos)
- * - Valor total del inventario
- * - Stock total
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/categorias/:id/stats
+ * Retorna: subcategorías (activas/inactivas), productos (activos/inactivos),
+ *          stock total y valor total del inventario.
  */
 const getEstadisticasCategoria = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Verificar que la categoría existe
+    // Verifica que la categoría existe
     const categoria = await Categoria.findByPk(id);
     
     if (!categoria) {
@@ -431,40 +434,44 @@ const getEstadisticasCategoria = async (req, res) => {
       });
     }
     
-    // Contar subcategorías
+    // Cuenta TODAS las subcategorías de esta categoría
     const totalSubcategorias = await Subcategoria.count({
       where: { categoriaId: id }
     });
     
+    // Cuenta solo las subcategorías ACTIVAS
     const subcategoriasActivas = await Subcategoria.count({
       where: { categoriaId: id, activo: true }
     });
     
-    // Contar productos
+    // Cuenta TODOS los productos de esta categoría
     const totalProductos = await Producto.count({
       where: { categoriaId: id }
     });
     
+    // Cuenta solo los productos ACTIVOS
     const productosActivos = await Producto.count({
       where: { categoriaId: id, activo: true }
     });
     
-    // Obtener productos para calcular estadísticas
+    // Obtiene precio y stock de cada producto para calcular estadísticas de inventario
     const productos = await Producto.findAll({
       where: { categoriaId: id },
-      attributes: ['precio', 'stock']
+      attributes: ['precio', 'stock']    // Solo trae estos 2 campos
     });
     
-    // Calcular estadísticas de inventario
-    let valorTotalInventario = 0;
-    let stockTotal = 0;
+    // Variables para acumular las estadísticas
+    let valorTotalInventario = 0;  // Suma de (precio × stock) de cada producto
+    let stockTotal = 0;            // Suma de todo el stock
     
+    // Recorre cada producto sumando al acumulador
     productos.forEach(producto => {
+      // parseFloat convierte el precio (puede venir como string DECIMAL) a número
       valorTotalInventario += parseFloat(producto.precio) * producto.stock;
       stockTotal += producto.stock;
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con todas las estadísticas calculadas
     res.json({
       success: true,
       data: {
@@ -477,6 +484,7 @@ const getEstadisticasCategoria = async (req, res) => {
           subcategorias: {
             total: totalSubcategorias,
             activas: subcategoriasActivas,
+            // Calcula inactivas restando activas del total
             inactivas: totalSubcategorias - subcategoriasActivas
           },
           productos: {
@@ -486,6 +494,7 @@ const getEstadisticasCategoria = async (req, res) => {
           },
           inventario: {
             stockTotal,
+            // toFixed(2) formatea a 2 decimales. Ej: 1234.5 → "1234.50"
             valorTotal: valorTotalInventario.toFixed(2)
           }
         }
@@ -502,13 +511,13 @@ const getEstadisticasCategoria = async (req, res) => {
   }
 };
 
-// Exportar todos los controladores
+// Exporta todas las funciones del controlador para usarlas en las rutas de admin.
 module.exports = {
-  getCategorias,
-  getCategoriaById,
-  crearCategoria,
-  actualizarCategoria,
-  toggleCategoria,
-  eliminarCategoria,
-  getEstadisticasCategoria
+  getCategorias,               // GET    /api/admin/categorias - Listar todas
+  getCategoriaById,            // GET    /api/admin/categorias/:id - Ver una
+  crearCategoria,              // POST   /api/admin/categorias - Crear nueva
+  actualizarCategoria,         // PUT    /api/admin/categorias/:id - Actualizar
+  toggleCategoria,             // PATCH  /api/admin/categorias/:id/toggle - Activar/Desactivar
+  eliminarCategoria,           // DELETE /api/admin/categorias/:id - Eliminar
+  getEstadisticasCategoria     // GET    /api/admin/categorias/:id/stats - Estadísticas
 };

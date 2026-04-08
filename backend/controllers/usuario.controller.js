@@ -1,40 +1,41 @@
 /**
  * ============================================
- * CONTROLADOR DE USUARIOS (ADMIN)
+ * CONTROLADOR DE USUARIOS (Admin)
  * ============================================
- * Maneja la gestión de usuarios por administradores
- * Lista usuarios, activa/desactiva cuentas
+ * Gestión de usuarios por parte de administradores.
+ * CRUD completo: listar, ver, crear, actualizar, toggle, eliminar y estadísticas.
+ * Solo accesible por administradores (protegido por middleware checkRole).
+ * Las rutas están definidas en routes/admin.routes.js
  */
 
-// Importar modelo Usuario
+// Importa el modelo Usuario desde models/Usuario.js → tabla 'Usuario'
 const Usuario = require('../models/Usuario');
 
 /**
- * Obtener todos los usuarios
+ * Obtener todos los usuarios (admin)
  * 
- * GET /api/admin/usuarios
- * Query params:
+ * Ruta: GET /api/admin/usuarios
+ * Query params opcionales:
  * - rol: 'cliente' | 'administrador'
- * - activo: true/false
+ * - activo: 'true'/'false'
  * - buscar: texto para buscar en nombre, apellido o email
- * - pagina: número de página
- * - limite: registros por página
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * - pagina, limite: Paginación
  */
 const getUsuarios = async (req, res) => {
   try {
+    // Extrae filtros y paginación de los query params
     const { rol, activo, buscar, pagina = 1, limite = 10 } = req.query;
     
-    // Construir filtros
+    // Construye filtros dinámicamente
     const where = {};
-    if (rol) where.rol = rol;
-    if (activo !== undefined) where.activo = activo === 'true';
+    if (rol) where.rol = rol;                                   // Filtra por rol
+    if (activo !== undefined) where.activo = activo === 'true';  // Convierte string a boolean
     
-    // Búsqueda por texto
+    // Búsqueda por texto en nombre, apellido o email
     if (buscar) {
-      const { Op } = require('sequelize');
+      const { Op } = require('sequelize');   // Importa operadores de Sequelize
+      // Op.or: busca donde coincida CUALQUIERA de las condiciones
+      // Op.like: equivale a LIKE en SQL. %texto% busca en cualquier posición.
       where[Op.or] = [
         { nombre: { [Op.like]: `%${buscar}%` } },
         { apellido: { [Op.like]: `%${buscar}%` } },
@@ -42,19 +43,20 @@ const getUsuarios = async (req, res) => {
       ];
     }
     
-    // Paginación
+    // Calcula el offset para paginación (cuántos registros saltar)
     const offset = (parseInt(pagina) - 1) * parseInt(limite);
     
-    // Obtener usuarios (sin password)
+    // Consulta usuarios con paginación.
+    // attributes.exclude: ['password'] → trae TODOS los campos EXCEPTO password (seguridad).
     const { count, rows: usuarios } = await Usuario.findAndCountAll({
       where,
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: ['password'] },   // Nunca enviar la contraseña al frontend
       limit: parseInt(limite),
       offset,
-      order: [['createdAt', 'DESC']]
+      order: [['createdAt', 'DESC']]            // Más recientes primero
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con los usuarios y la paginación
     res.json({
       success: true,
       data: {
@@ -79,17 +81,15 @@ const getUsuarios = async (req, res) => {
 };
 
 /**
- * Obtener un usuario por ID
+ * Obtener un usuario por ID (admin)
  * 
- * GET /api/admin/usuarios/:id
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/usuarios/:id
  */
 const getUsuarioById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params;    // ID del usuario desde la URL
     
+    // Busca por Primary Key, excluyendo el campo password de la respuesta
     const usuario = await Usuario.findByPk(id, {
       attributes: { exclude: ['password'] }
     });
@@ -119,19 +119,18 @@ const getUsuarioById = async (req, res) => {
 };
 
 /**
- * Crear nuevo usuario (por admin)
+ * Crear nuevo usuario (admin)
  * 
- * POST /api/admin/usuarios
- * Body: { nombre, apellido, email, password, rol, telefono, direccion }
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: POST /api/admin/usuarios
+ * Body JSON: { nombre, apellido, email, password, rol, telefono, direccion }
+ * A diferencia del registro público, aquí el admin elige el rol.
  */
 const crearUsuario = async (req, res) => {
   try {
+    // Extrae todos los campos del body
     const { nombre, apellido, email, password, rol, telefono, direccion } = req.body;
     
-    // Validaciones
+    // VALIDACIÓN 1: Campos obligatorios
     if (!nombre || !apellido || !email || !password || !rol) {
       return res.status(400).json({
         success: false,
@@ -139,7 +138,7 @@ const crearUsuario = async (req, res) => {
       });
     }
     
-    // Validar rol
+    // VALIDACIÓN 2: El rol debe ser uno de los permitidos
     if (!['cliente', 'auxiliar', 'administrador'].includes(rol)) {
       return res.status(400).json({
         success: false,
@@ -147,7 +146,7 @@ const crearUsuario = async (req, res) => {
       });
     }
     
-    // Verificar email único
+    // VALIDACIÓN 3: Verifica que el email no esté ya registrado
     const usuarioExistente = await Usuario.findOne({ where: { email } });
     if (usuarioExistente) {
       return res.status(400).json({
@@ -156,18 +155,21 @@ const crearUsuario = async (req, res) => {
       });
     }
     
-    // Crear usuario
+    // Crea el usuario en la BD. El hook beforeCreate del modelo
+    // se encarga de hashear (encriptar) la contraseña automáticamente.
     const nuevoUsuario = await Usuario.create({
       nombre,
       apellido,
       email,
-      password,
-      rol,
-      telefono: telefono || null,
-      direccion: direccion || null,
-      activo: true
+      password,                          // Se hashea automáticamente en el hook
+      rol,                               // El admin elige el rol
+      telefono: telefono || null,        // Opcional, null si no se envía
+      direccion: direccion || null,       // Opcional
+      activo: true                        // Se crea activo por defecto
     });
     
+    // 201 = Created. toJSON() convierte la instancia a objeto plano
+    // (y el modelo excluye password con defaultScope o el getter del modelo)
     res.status(201).json({
       success: true,
       message: 'Usuario creado exitosamente',
@@ -179,6 +181,7 @@ const crearUsuario = async (req, res) => {
   } catch (error) {
     console.error('Error en crearUsuario:', error);
     
+    // Captura errores de validación del modelo Sequelize
     if (error.name === 'SequelizeValidationError') {
       return res.status(400).json({
         success: false,
@@ -196,19 +199,18 @@ const crearUsuario = async (req, res) => {
 };
 
 /**
- * Actualizar usuario (por admin)
+ * Actualizar usuario (admin)
  * 
- * PUT /api/admin/usuarios/:id
- * Body: { nombre, apellido, telefono, direccion, rol }
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PUT /api/admin/usuarios/:id
+ * Body JSON: { nombre, apellido, telefono, direccion, rol }
+ * NOTA: No permite cambiar email ni password desde aquí.
  */
 const actualizarUsuario = async (req, res) => {
   try {
     const { id } = req.params;
     const { nombre, apellido, telefono, direccion, rol } = req.body;
     
+    // Busca el usuario por ID
     const usuario = await Usuario.findByPk(id);
     
     if (!usuario) {
@@ -218,7 +220,7 @@ const actualizarUsuario = async (req, res) => {
       });
     }
     
-    // Validar rol si se proporciona
+    // VALIDACIÓN: Si se envía rol, debe ser válido
     if (rol && !['cliente', 'administrador'].includes(rol)) {
       return res.status(400).json({
         success: false,
@@ -226,15 +228,17 @@ const actualizarUsuario = async (req, res) => {
       });
     }
     
-    // Actualizar campos
+    // Actualiza SOLO los campos que se enviaron
     if (nombre !== undefined) usuario.nombre = nombre;
     if (apellido !== undefined) usuario.apellido = apellido;
     if (telefono !== undefined) usuario.telefono = telefono;
     if (direccion !== undefined) usuario.direccion = direccion;
     if (rol !== undefined) usuario.rol = rol;
     
+    // save() ejecuta UPDATE en la BD
     await usuario.save();
     
+    // Responde con el usuario actualizado (toJSON excluye password)
     res.json({
       success: true,
       message: 'Usuario actualizado exitosamente',
@@ -254,12 +258,11 @@ const actualizarUsuario = async (req, res) => {
 };
 
 /**
- * Activar/Desactivar usuario
+ * Activar/Desactivar usuario (toggle) (admin)
  * 
- * PATCH /api/admin/usuarios/:id/toggle
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PATCH /api/admin/usuarios/:id/toggle
+ * Invierte el estado activo del usuario.
+ * Protección: un admin NO puede desactivarse a sí mismo.
  */
 const toggleUsuario = async (req, res) => {
   try {
@@ -274,7 +277,8 @@ const toggleUsuario = async (req, res) => {
       });
     }
     
-    // No permitir desactivar al propio admin
+    // PROTECCIÓN: No permite que el admin se desactive a sí mismo.
+    // req.usuario.id viene del middleware de autenticación (JWT decodificado).
     if (usuario.id === req.usuario.id) {
       return res.status(400).json({
         success: false,
@@ -282,6 +286,7 @@ const toggleUsuario = async (req, res) => {
       });
     }
     
+    // Invierte el estado: true → false, false → true
     usuario.activo = !usuario.activo;
     await usuario.save();
     
@@ -304,12 +309,10 @@ const toggleUsuario = async (req, res) => {
 };
 
 /**
- * Eliminar usuario
+ * Eliminar usuario (admin)
  * 
- * DELETE /api/admin/usuarios/:id
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: DELETE /api/admin/usuarios/:id
+ * Protección: un admin NO puede eliminarse a sí mismo.
  */
 const eliminarUsuario = async (req, res) => {
   try {
@@ -324,7 +327,7 @@ const eliminarUsuario = async (req, res) => {
       });
     }
     
-    // No permitir eliminar al propio admin
+    // PROTECCIÓN: No permite que el admin se elimine a sí mismo
     if (usuario.id === req.usuario.id) {
       return res.status(400).json({
         success: false,
@@ -332,6 +335,7 @@ const eliminarUsuario = async (req, res) => {
       });
     }
     
+    // destroy() ejecuta DELETE FROM Usuario WHERE id = :id
     await usuario.destroy();
     
     res.json({
@@ -350,21 +354,25 @@ const eliminarUsuario = async (req, res) => {
 };
 
 /**
- * Obtener estadísticas de usuarios
+ * Obtener estadísticas de usuarios (admin)
  * 
- * GET /api/admin/usuarios/stats
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/usuarios/stats
+ * Retorna: totales, por rol y por estado.
  */
 const getEstadisticasUsuarios = async (req, res) => {
   try {
+    // Cuenta total de usuarios en la BD
     const totalUsuarios = await Usuario.count();
+    // Cuenta usuarios con rol 'cliente'
     const totalClientes = await Usuario.count({ where: { rol: 'cliente' } });
+    // Cuenta usuarios con rol 'administrador'
     const totalAdmins = await Usuario.count({ where: { rol: 'administrador' } });
+    // Cuenta usuarios activos
     const usuariosActivos = await Usuario.count({ where: { activo: true } });
+    // Cuenta usuarios inactivos
     const usuariosInactivos = await Usuario.count({ where: { activo: false } });
     
+    // Responde con todas las estadísticas
     res.json({
       success: true,
       data: {
@@ -390,13 +398,13 @@ const getEstadisticasUsuarios = async (req, res) => {
   }
 };
 
-// Exportar controladores
+// Exporta todas las funciones del controlador para usarlas en las rutas de admin.
 module.exports = {
-  getUsuarios,
-  getUsuarioById,
-  crearUsuario,
-  actualizarUsuario,
-  toggleUsuario,
-  eliminarUsuario,
-  getEstadisticasUsuarios
+  getUsuarios,               // GET    /api/admin/usuarios - Listar todos
+  getUsuarioById,            // GET    /api/admin/usuarios/:id - Ver uno
+  crearUsuario,              // POST   /api/admin/usuarios - Crear nuevo
+  actualizarUsuario,         // PUT    /api/admin/usuarios/:id - Actualizar
+  toggleUsuario,             // PATCH  /api/admin/usuarios/:id/toggle - Activar/Desactivar
+  eliminarUsuario,           // DELETE /api/admin/usuarios/:id - Eliminar
+  getEstadisticasUsuarios    // GET    /api/admin/usuarios/stats - Estadísticas
 };

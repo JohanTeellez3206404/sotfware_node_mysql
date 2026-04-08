@@ -2,124 +2,146 @@
  * ============================================
  * CONTROLADOR DE CATÁLOGO PÚBLICO
  * ============================================
- * Endpoints públicos para ver productos
- * No requieren autenticación
+ * Endpoints públicos para que cualquier visitante vea productos y categorías.
+ * NO requieren autenticación (no necesitan token JWT).
+ * Es usado por las rutas definidas en routes/auth.routes.js (rutas públicas).
  */
 
-// Importar modelos
+// Importa el modelo Producto desde models/Producto.js.
+// Representa la tabla 'Producto' en la BD.
 const Producto = require('../models/Producto');
+
+// Importa el modelo Categoria desde models/Categoria.js.
+// Representa la tabla 'Categoria' en la BD.
 const Categoria = require('../models/Categoria');
+
+// Importa el modelo Subcategoria desde models/Subcategoria.js.
+// Representa la tabla 'Subcategoria' en la BD.
 const Subcategoria = require('../models/Subcategoria');
 
 /**
  * Obtener catálogo de productos (público)
  * 
- * GET /api/catalogo/productos
- * Query params:
+ * Ruta: GET /api/catalogo/productos
+ * Query params opcionales (se envían en la URL como ?parametro=valor):
  * - categoriaId: Filtrar por categoría
  * - subcategoriaId: Filtrar por subcategoría
- * - buscar: Texto para buscar
+ * - buscar: Texto para buscar en nombre o descripción
  * - precioMin, precioMax: Rango de precios
  * - orden: 'precio_asc' | 'precio_desc' | 'nombre' | 'reciente'
  * - pagina, limite: Paginación
  * 
- * Solo muestra productos activos con stock
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Solo muestra productos activos que tengan stock > 0
  */
 const getProductos = async (req, res) => {
   try {
+    // Extrae los query params de la URL.
+    // req.query contiene los parámetros después del ? en la URL.
+    // Ejemplo: /productos?categoriaId=1&orden=precio_asc
+    // Los valores con = son valores por defecto si no se envían.
     const {
       categoriaId,
       subcategoriaId,
       buscar,
       precioMin,
       precioMax,
-      orden = 'reciente',
-      pagina = 1,
-      limite = 12
+      orden = 'reciente',     // Si no viene, ordena por más recientes
+      pagina = 1,             // Página actual, por defecto la primera
+      limite = 12             // Productos por página, por defecto 12
     } = req.query;
 
+    // Importa Op (Operadores) de Sequelize.
+    // Op provee operadores SQL como: Op.gt (>), Op.lt (<), Op.like (LIKE), Op.or (OR)
     const { Op } = require('sequelize');
     
-    // Filtros base: solo productos activos con stock
+    // Filtros base: SIEMPRE filtra productos activos con stock > 0.
+    // where es el objeto que Sequelize traduce a la cláusula WHERE de SQL.
     const where = {
-      activo: true,
-      stock: { [Op.gt]: 0 }
+      activo: true,                    // Solo productos activos
+      stock: { [Op.gt]: 0 }           // Op.gt = greater than (mayor que). Stock > 0
     };
     
-    // Filtros opcionales
-    if (categoriaId) where.categoriaId = categoriaId;
-    if (subcategoriaId) where.subcategoriaId = subcategoriaId;
+    // Agrega filtros opcionales SOLO si el usuario los envió en la URL
+    if (categoriaId) where.categoriaId = categoriaId;         // Filtra por categoría
+    if (subcategoriaId) where.subcategoriaId = subcategoriaId; // Filtra por subcategoría
     
-    // Búsqueda por texto
+    // Búsqueda por texto en nombre O descripción del producto
     if (buscar) {
+      // Op.or: busca donde se cumpla CUALQUIERA de las condiciones (OR en SQL)
+      // Op.like: equivale a LIKE en SQL. %texto% busca el texto en cualquier posición
       where[Op.or] = [
-        { nombre: { [Op.like]: `%${buscar}%` } },
-        { descripcion: { [Op.like]: `%${buscar}%` } }
+        { nombre: { [Op.like]: `%${buscar}%` } },      // Busca en el nombre
+        { descripcion: { [Op.like]: `%${buscar}%` } }   // O en la descripción
       ];
     }
     
-    // Filtro por rango de precios
+    // Filtro por rango de precios (mínimo y/o máximo)
     if (precioMin || precioMax) {
-      where.precio = {};
+      where.precio = {};  // Crea el objeto para filtrar precio
+      // Op.gte = greater than or equal (>=). Precio >= precioMin
       if (precioMin) where.precio[Op.gte] = parseFloat(precioMin);
+      // Op.lte = less than or equal (<=). Precio <= precioMax
       if (precioMax) where.precio[Op.lte] = parseFloat(precioMax);
     }
     
-    // Ordenamiento
+    // Define el ordenamiento según el parámetro 'orden'
+    // order es un array de arrays: [['campo', 'dirección']]
     let order;
     switch (orden) {
-      case 'precio_asc':
+      case 'precio_asc':                    // Precio de menor a mayor
         order = [['precio', 'ASC']];
         break;
-      case 'precio_desc':
+      case 'precio_desc':                   // Precio de mayor a menor
         order = [['precio', 'DESC']];
         break;
-      case 'nombre':
+      case 'nombre':                        // Nombre alfabéticamente A-Z
         order = [['nombre', 'ASC']];
         break;
-      case 'reciente':
+      case 'reciente':                      // Más recientes primero
       default:
         order = [['createdAt', 'DESC']];
         break;
     }
     
-    // Paginación
+    // Calcula el offset (cuántos registros saltar) para la paginación.
+    // Ejemplo: página 3 con límite 12 -> offset = (3-1) * 12 = 24 (salta los primeros 24)
     const offset = (parseInt(pagina) - 1) * parseInt(limite);
     
-    // Consultar productos
+    // Consulta productos con paginación.
+    // findAndCountAll() retorna { count: total, rows: registros }
+    // count = total de registros que coinciden (para calcular páginas)
+    // rows = solo los registros de la página actual
     const { count, rows: productos } = await Producto.findAndCountAll({
-      where,
-      include: [
+      where,                      // Filtros definidos arriba
+      include: [                  // JOINs con tablas relacionadas
         {
           model: Categoria,
           as: 'categoria',
           attributes: ['id', 'nombre'],
-          where: { activo: true }
+          where: { activo: true }    // Solo categorías activas
         },
         {
           model: Subcategoria,
           as: 'subcategoria',
           attributes: ['id', 'nombre'],
-          where: { activo: true }
+          where: { activo: true }    // Solo subcategorías activas
         }
       ],
-      limit: parseInt(limite),
-      offset,
-      order
+      limit: parseInt(limite),    // Máximo de registros a retornar
+      offset,                     // Registros a saltar
+      order                       // Ordenamiento
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con los productos y la info de paginación
     res.json({
       success: true,
       data: {
-        productos,
+        productos,                 // Array de productos de esta página
         paginacion: {
-          total: count,
+          total: count,            // Total de productos que coinciden con los filtros
           pagina: parseInt(pagina),
           limite: parseInt(limite),
+          // Math.ceil redondea hacia arriba: 25/12 = 2.08 -> 3 páginas
           totalPaginas: Math.ceil(count / parseInt(limite))
         }
       }
@@ -138,37 +160,38 @@ const getProductos = async (req, res) => {
 /**
  * Obtener un producto por ID (público)
  * 
- * GET /api/catalogo/productos/:id
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/catalogo/productos/:id
+ * Solo retorna el producto si está activo.
  */
 const getProductoById = async (req, res) => {
   try {
+    // Obtiene el ID del producto de los parámetros de la URL
     const { id } = req.params;
     
-    // Buscar producto activo con stock
+    // Busca UN producto que cumpla: tener ese ID y estar activo.
+    // findOne() retorna un solo registro o null.
     const producto = await Producto.findOne({
       where: { 
-        id, 
-        activo: true
+        id,                // ID del producto
+        activo: true       // Solo si está activo
       },
       include: [
         {
           model: Categoria,
           as: 'categoria',
           attributes: ['id', 'nombre'],
-          where: { activo: true }
+          where: { activo: true }      // Categoría debe estar activa
         },
         {
           model: Subcategoria,
           as: 'subcategoria',
           attributes: ['id', 'nombre'],
-          where: { activo: true }
+          where: { activo: true }      // Subcategoría debe estar activa
         }
       ]
     });
     
+    // Si no encontró el producto (no existe, está inactivo, o su categoría/subcategoría está inactiva)
     if (!producto) {
       return res.status(404).json({
         success: false,
@@ -176,7 +199,7 @@ const getProductoById = async (req, res) => {
       });
     }
     
-    // RESPUESTA EXITOSA
+    // Responde con el producto encontrado
     res.json({
       success: true,
       data: {
@@ -197,34 +220,37 @@ const getProductoById = async (req, res) => {
 /**
  * Obtener todas las categorías (público)
  * 
- * GET /api/catalogo/categorias
- * Solo categorías activas con contador de productos
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/catalogo/categorias
+ * Solo categorías activas, con contador de productos disponibles en cada una.
  */
 const getCategorias = async (req, res) => {
   try {
+    // Importa Op de Sequelize para usar operadores
     const { Op } = require('sequelize');
     
-    // Obtener categorías activas
+    // Obtiene todas las categorías activas, ordenadas alfabéticamente
     const categorias = await Categoria.findAll({
       where: { activo: true },
       attributes: ['id', 'nombre', 'descripcion'],
-      order: [['nombre', 'ASC']]
+      order: [['nombre', 'ASC']]     // A-Z por nombre
     });
     
-    // Para cada categoría, contar productos activos con stock
+    // Para cada categoría, cuenta cuántos productos activos con stock tiene.
+    // Promise.all() ejecuta múltiples promesas en paralelo y espera que todas terminen.
+    // .map() transforma cada categoría en una promesa que agrega el contador.
     const categoriasConContador = await Promise.all(
       categorias.map(async (categoria) => {
+        // Cuenta los productos activos con stock > 0 en esta categoría
         const totalProductos = await Producto.count({
           where: {
-            categoriaId: categoria.id,
-            activo: true,
-            stock: { [Op.gt]: 0 }
+            categoriaId: categoria.id,   // De esta categoría
+            activo: true,                // Activos
+            stock: { [Op.gt]: 0 }        // Con stock > 0
           }
         });
         
+        // Retorna la categoría como objeto plano + el campo totalProductos
+        // El spread operator (...) copia todas las propiedades del objeto
         return {
           ...categoria.toJSON(),
           totalProductos
@@ -232,7 +258,7 @@ const getCategorias = async (req, res) => {
       })
     );
     
-    // RESPUESTA EXITOSA
+    // Responde con las categorías y sus contadores
     res.json({
       success: true,
       data: {
@@ -253,17 +279,16 @@ const getCategorias = async (req, res) => {
 /**
  * Obtener subcategorías de una categoría (público)
  * 
- * GET /api/catalogo/categorias/:id/subcategorias
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/catalogo/categorias/:id/subcategorias
+ * Retorna las subcategorías activas de la categoría indicada.
  */
 const getSubcategoriasPorCategoria = async (req, res) => {
   try {
+    // Obtiene el ID de la categoría desde la URL
     const { id } = req.params;
     const { Op } = require('sequelize');
     
-    // Verificar que la categoría existe y está activa
+    // Verifica que la categoría exista y esté activa
     const categoria = await Categoria.findOne({
       where: { id, activo: true }
     });
@@ -275,17 +300,17 @@ const getSubcategoriasPorCategoria = async (req, res) => {
       });
     }
     
-    // Obtener subcategorías activas
+    // Obtiene las subcategorías activas de esta categoría
     const subcategorias = await Subcategoria.findAll({
       where: {
-        categoriaId: id,
-        activo: true
+        categoriaId: id,    // Que pertenezcan a esta categoría
+        activo: true         // Solo activas
       },
       attributes: ['id', 'nombre', 'descripcion'],
       order: [['nombre', 'ASC']]
     });
     
-    // Contar productos por subcategoría
+    // Cuenta productos disponibles por cada subcategoría
     const subcategoriasConContador = await Promise.all(
       subcategorias.map(async (subcategoria) => {
         const totalProductos = await Producto.count({
@@ -303,7 +328,7 @@ const getSubcategoriasPorCategoria = async (req, res) => {
       })
     );
     
-    // RESPUESTA EXITOSA
+    // Responde con la categoría y sus subcategorías
     res.json({
       success: true,
       data: {
@@ -328,22 +353,21 @@ const getSubcategoriasPorCategoria = async (req, res) => {
 /**
  * Obtener productos destacados/recientes (público)
  * 
- * GET /api/catalogo/destacados
- * Query: ?limite=8
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/catalogo/destacados
+ * Query: ?limite=8 (cantidad de productos a mostrar)
+ * Retorna los productos más recientes que estén activos y con stock.
  */
 const getProductosDestacados = async (req, res) => {
   try {
+    // Obtiene el límite de productos a mostrar (por defecto 8)
     const { limite = 8 } = req.query;
     const { Op } = require('sequelize');
     
-    // Obtener productos más recientes
+    // Busca los productos más recientes que estén activos y con stock
     const productos = await Producto.findAll({
       where: {
         activo: true,
-        stock: { [Op.gt]: 0 }
+        stock: { [Op.gt]: 0 }     // Stock mayor que 0
       },
       include: [
         {
@@ -359,10 +383,11 @@ const getProductosDestacados = async (req, res) => {
           where: { activo: true }
         }
       ],
-      limit: parseInt(limite),
-      order: [['createdAt', 'DESC']]
+      limit: parseInt(limite),        // Máximo de productos a retornar
+      order: [['createdAt', 'DESC']]  // Los más recientes primero
     });
     
+    // Responde con los productos destacados
     res.json({
       success: true,
       data: {
@@ -380,11 +405,11 @@ const getProductosDestacados = async (req, res) => {
   }
 };
 
-// Exportar controladores
+// Exporta las funciones del controlador para usarlas en las rutas públicas.
 module.exports = {
-  getProductos,
-  getProductoById,
-  getCategorias,
-  getSubcategoriasPorCategoria,
-  getProductosDestacados
+  getProductos,                  // GET /api/catalogo/productos - Catálogo con filtros
+  getProductoById,               // GET /api/catalogo/productos/:id - Detalle de producto
+  getCategorias,                 // GET /api/catalogo/categorias - Listar categorías
+  getSubcategoriasPorCategoria,  // GET /api/catalogo/categorias/:id/subcategorias
+  getProductosDestacados         // GET /api/catalogo/destacados - Productos recientes
 };

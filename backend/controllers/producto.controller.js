@@ -1,101 +1,109 @@
 /**
  * ============================================
- * CONTROLADOR DE PRODUCTOS
+ * CONTROLADOR DE PRODUCTOS (Admin)
  * ============================================
- * Maneja las operaciones CRUD de productos
- * Incluye subida de imágenes con Multer
- * Solo accesible por administradores
+ * CRUD completo de productos con subida de imágenes (Multer).
+ * Incluye: listar, ver, crear, actualizar, toggle, eliminar, gestión de stock.
+ * Solo accesible por administradores (protegido por middleware checkRole).
+ * Las rutas están definidas en routes/admin.routes.js
  */
 
-// Importar modelos
+// Importa el modelo Producto desde models/Producto.js → tabla 'Producto'
 const Producto = require('../models/Producto');
+
+// Importa el modelo Categoria desde models/Categoria.js → tabla 'Categoria'
 const Categoria = require('../models/Categoria');
+
+// Importa el modelo Subcategoria desde models/Subcategoria.js → tabla 'Subcategoria'
 const Subcategoria = require('../models/Subcategoria');
 
-// Importar path y fs para manejo de archivos
+// 'path' es un módulo nativo de Node.js para manejar rutas de archivos.
+// Se usa para construir la ruta completa de las imágenes en el disco.
 const path = require('path');
+
+// 'fs.promises' es el módulo nativo de Node.js para manejar archivos de forma asíncrona.
+// Se usa para eliminar imágenes del disco (unlink).
 const fs = require('fs').promises;
 
 /**
- * Obtener todos los productos (Admin)
+ * Obtener todos los productos (admin)
  * 
- * GET /api/admin/productos
- * Query params:
- * - categoriaId: Filtrar por categoría
- * - subcategoriaId: Filtrar por subcategoría
- * - activo: true/false
- * - conStock: true (solo productos con stock > 0)
+ * Ruta: GET /api/admin/productos
+ * Query params opcionales:
+ * - categoriaId, subcategoriaId: Filtrar por categoría/subcategoría
+ * - activo: 'true'/'false'
+ * - conStock: 'true' → solo productos con stock > 0
  * - buscar: texto para buscar en nombre o descripción
- * - pagina: número de página (default 1)
- * - limite: registros por página (default 10)
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * - pagina, limite: Paginación
  */
 const getProductos = async (req, res) => {
   try {
+    // Extrae todos los filtros y datos de paginación de los query params
     const { 
       categoriaId, 
       subcategoriaId, 
       activo, 
       conStock,
       buscar,
-      pagina = 1,
-      limite = 100
+      pagina = 1,       // Página actual (default: 1)
+      limite = 100       // Registros por página (default: 100)
     } = req.query;
     
-    // Construir filtros
+    // Construye el objeto WHERE dinámicamente según los filtros recibidos
     const where = {};
-    if (categoriaId) where.categoriaId = categoriaId;
-    if (subcategoriaId) where.subcategoriaId = subcategoriaId;
-    if (activo !== undefined) where.activo = activo === 'true';
+    if (categoriaId) where.categoriaId = categoriaId;           // Filtra por categoría
+    if (subcategoriaId) where.subcategoriaId = subcategoriaId;  // Filtra por subcategoría
+    if (activo !== undefined) where.activo = activo === 'true';  // Convierte string a boolean
+    // Op.gt = greater than (>). stock > 0
     if (conStock === 'true') where.stock = { [require('sequelize').Op.gt]: 0 };
     
-    // Búsqueda por texto
+    // Búsqueda por texto en nombre o descripción
     if (buscar) {
       const { Op } = require('sequelize');
+      // Op.or: busca en nombre O descripción
+      // Op.like: equivale a LIKE en SQL
       where[Op.or] = [
         { nombre: { [Op.like]: `%${buscar}%` } },
         { descripcion: { [Op.like]: `%${buscar}%` } }
       ];
     }
     
-    // Paginación
+    // Calcula el offset para paginación (cuántos registros saltar)
     const offset = (parseInt(pagina) - 1) * parseInt(limite);
     
-    // Opciones de consulta
+    // Opciones completas de la consulta Sequelize
     const opciones = {
-      where,
-      include: [
+      where,                    // Filtros construidos arriba
+      include: [                // JOINs con tablas relacionadas
         {
           model: Categoria,
           as: 'categoria',
-          attributes: ['id', 'nombre']
+          attributes: ['id', 'nombre']     // Solo trae id y nombre de la categoría
         },
         {
           model: Subcategoria,
           as: 'subcategoria',
-          attributes: ['id', 'nombre']
+          attributes: ['id', 'nombre']     // Solo trae id y nombre de la subcategoría
         }
       ],
-      limit: parseInt(limite),
-      offset,
-      order: [['nombre', 'ASC']]
+      limit: parseInt(limite),  // Máximo de registros
+      offset,                   // Registros a saltar
+      order: [['nombre', 'ASC']]  // Ordenar alfabéticamente A-Z
     };
     
-    // Obtener productos y total
+    // findAndCountAll retorna { count: total, rows: registros de esta página }
     const { count, rows: productos } = await Producto.findAndCountAll(opciones);
     
-    // RESPUESTA EXITOSA
+    // Responde con los productos y la información de paginación
     res.json({
       success: true,
       data: {
         productos,
         paginacion: {
-          total: count,
+          total: count,                     // Total de productos que coinciden
           pagina: parseInt(pagina),
           limite: parseInt(limite),
-          totalPaginas: Math.ceil(count / parseInt(limite))
+          totalPaginas: Math.ceil(count / parseInt(limite))  // Redondea hacia arriba
         }
       }
     });
@@ -111,24 +119,23 @@ const getProductos = async (req, res) => {
 };
 
 /**
- * Obtener un producto por ID
+ * Obtener un producto por ID (admin)
  * 
- * GET /api/admin/productos/:id
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: GET /api/admin/productos/:id
+ * Retorna el producto con su categoría y subcategoría.
  */
 const getProductoById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params;  // ID del producto desde la URL
     
-    // Buscar producto con relaciones
+    // findByPk busca por Primary Key (clave primaria = id)
+    // include hace JOINs con Categoria y Subcategoria
     const producto = await Producto.findByPk(id, {
       include: [
         {
           model: Categoria,
           as: 'categoria',
-          attributes: ['id', 'nombre', 'activo']
+          attributes: ['id', 'nombre', 'activo']   // Incluye si está activa
         },
         {
           model: Subcategoria,
@@ -138,6 +145,7 @@ const getProductoById = async (req, res) => {
       ]
     });
     
+    // Si no existe el producto
     if (!producto) {
       return res.status(404).json({
         success: false,
@@ -145,7 +153,7 @@ const getProductoById = async (req, res) => {
       });
     }
     
-    // RESPUESTA EXITOSA
+    // Responde con el producto encontrado
     res.json({
       success: true,
       data: {
@@ -164,26 +172,21 @@ const getProductoById = async (req, res) => {
 };
 
 /**
- * Crear nuevo producto
+ * Crear nuevo producto (admin)
  * 
- * POST /api/admin/productos
- * Body (multipart/form-data):
- * - nombre (requerido)
- * - descripcion
- * - precio (requerido)
- * - stock (requerido)
- * - categoriaId (requerido)
- * - subcategoriaId (requerido)
- * - imagen (archivo - opcional)
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: POST /api/admin/productos
+ * Body (multipart/form-data) porque puede incluir imagen:
+ * - nombre (requerido), descripcion, precio (requerido), stock (requerido)
+ * - categoriaId (requerido), subcategoriaId (requerido)
+ * - imagen (archivo opcional - procesado por Multer middleware)
  */
 const crearProducto = async (req, res) => {
   try {
+    // Extrae los campos del body. Con multipart/form-data (por Multer), los campos
+    // de texto vienen en req.body y el archivo en req.file.
     const { nombre, descripcion, precio, stock, categoriaId, subcategoriaId } = req.body;
     
-    // VALIDACIÓN 1: Campos requeridos
+    // VALIDACIÓN 1: Verifica que todos los campos obligatorios estén presentes
     if (!nombre || !precio || !categoriaId || !subcategoriaId) {
       return res.status(400).json({
         success: false,
@@ -191,7 +194,7 @@ const crearProducto = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 2: Verificar que la categoría existe y está activa
+    // VALIDACIÓN 2: Verifica que la categoría exista y esté activa
     const categoria = await Categoria.findByPk(categoriaId);
     if (!categoria) {
       return res.status(404).json({
@@ -206,7 +209,7 @@ const crearProducto = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 3: Verificar que la subcategoría existe, está activa y pertenece a la categoría
+    // VALIDACIÓN 3: Verifica que la subcategoría exista, esté activa y pertenezca a la categoría
     const subcategoria = await Subcategoria.findByPk(subcategoriaId);
     if (!subcategoria) {
       return res.status(404).json({
@@ -220,6 +223,7 @@ const crearProducto = async (req, res) => {
         message: `La subcategoría "${subcategoria.nombre}" está inactiva`
       });
     }
+    // Verifica que la subcategoría pertenezca a la categoría seleccionada
     if (subcategoria.categoriaId !== parseInt(categoriaId)) {
       return res.status(400).json({
         success: false,
@@ -227,13 +231,14 @@ const crearProducto = async (req, res) => {
       });
     }
     
-    // VALIDACIÓN 4: Precio y stock válidos
+    // VALIDACIÓN 4: Precio debe ser mayor a 0
     if (parseFloat(precio) <= 0) {
       return res.status(400).json({
         success: false,
         message: 'El precio debe ser mayor a 0'
       });
     }
+    // Stock no puede ser negativo
     if (parseInt(stock) < 0) {
       return res.status(400).json({
         success: false,
@@ -241,22 +246,23 @@ const crearProducto = async (req, res) => {
       });
     }
     
-    // Obtener nombre de archivo de imagen si se subió
+    // Si se subió una imagen, Multer la guarda en uploads/ y pone los datos en req.file.
+    // req.file.filename es el nombre generado por Multer (ej: "producto_1719344567890_abc12.jpg")
     const imagen = req.file ? req.file.filename : null;
     
-    // CREAR PRODUCTO
+    // Crea el registro en la tabla Producto (INSERT INTO Producto ...)
     const nuevoProducto = await Producto.create({
       nombre,
-      descripcion: descripcion || null,
-      precio: parseFloat(precio),
-      stock: parseInt(stock) || 0,
-      categoriaId: parseInt(categoriaId),
-      subcategoriaId: parseInt(subcategoriaId),
-      imagen,
-      activo: true
+      descripcion: descripcion || null,            // Null si no se envía
+      precio: parseFloat(precio),                   // Convierte a número decimal
+      stock: parseInt(stock) || 0,                  // Convierte a entero, default 0
+      categoriaId: parseInt(categoriaId),           // FK a la tabla Categoria
+      subcategoriaId: parseInt(subcategoriaId),     // FK a la tabla Subcategoria
+      imagen,                                       // Nombre del archivo o null
+      activo: true                                   // Se crea activo por defecto
     });
     
-    // Recargar con relaciones
+    // Recarga el producto con sus relaciones (categoría y subcategoría)
     await nuevoProducto.reload({
       include: [
         { model: Categoria, as: 'categoria', attributes: ['id', 'nombre'] },
@@ -264,7 +270,7 @@ const crearProducto = async (req, res) => {
       ]
     });
     
-    // RESPUESTA EXITOSA
+    // 201 = Created
     res.status(201).json({
       success: true,
       message: 'Producto creado exitosamente',
@@ -276,16 +282,19 @@ const crearProducto = async (req, res) => {
   } catch (error) {
     console.error('Error en crearProducto:', error);
     
-    // Si hubo un error, eliminar la imagen subida
+    // Si ocurrió un error y se había subido una imagen, la elimina del disco
+    // para no dejar archivos huérfanos.
     if (req.file) {
+      // path.join() construye la ruta completa: __dirname (directorio actual) + ../uploads + nombre
       const rutaImagen = path.join(__dirname, '../uploads', req.file.filename);
       try {
-        await fs.unlink(rutaImagen);
+        await fs.unlink(rutaImagen);    // Elimina el archivo del disco
       } catch (err) {
         console.error('Error al eliminar imagen:', err);
       }
     }
     
+    // Captura errores de validación del modelo Sequelize
     if (error.name === 'SequelizeValidationError') {
       return res.status(400).json({
         success: false,
@@ -303,21 +312,19 @@ const crearProducto = async (req, res) => {
 };
 
 /**
- * Actualizar producto
+ * Actualizar producto existente (admin)
  * 
- * PUT /api/admin/productos/:id
+ * Ruta: PUT /api/admin/productos/:id
  * Body (multipart/form-data):
- * - nombre, descripcion, precio, stock, categoriaId, subcategoriaId, imagen
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * - nombre, descripcion, precio, stock, categoriaId, subcategoriaId, activo
+ * - imagen (archivo opcional - si se envía, reemplaza la anterior)
  */
 const actualizarProducto = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params;   // ID del producto desde la URL
     const { nombre, descripcion, precio, stock, categoriaId, subcategoriaId, activo } = req.body;
     
-    // Buscar producto
+    // Busca el producto existente por su ID
     const producto = await Producto.findByPk(id);
     
     if (!producto) {
@@ -327,7 +334,7 @@ const actualizarProducto = async (req, res) => {
       });
     }
     
-    // VALIDACIONES si se cambian categoría o subcategoría
+    // VALIDACIÓN: Si se cambia la categoría, verifica que exista y esté activa
     if (categoriaId && categoriaId !== producto.categoriaId) {
       const categoria = await Categoria.findByPk(categoriaId);
       if (!categoria || !categoria.activo) {
@@ -338,6 +345,8 @@ const actualizarProducto = async (req, res) => {
       }
     }
     
+    // VALIDACIÓN: Si se cambia la subcategoría, verifica que exista, esté activa
+    // y pertenezca a la categoría (nueva o actual)
     if (subcategoriaId && subcategoriaId !== producto.subcategoriaId) {
       const subcategoria = await Subcategoria.findByPk(subcategoriaId);
       if (!subcategoria || !subcategoria.activo) {
@@ -347,6 +356,7 @@ const actualizarProducto = async (req, res) => {
         });
       }
       
+      // Usa la nueva categoría si se envió, o la actual del producto
       const catId = categoriaId || producto.categoriaId;
       if (subcategoria.categoriaId !== parseInt(catId)) {
         return res.status(400).json({
@@ -356,7 +366,7 @@ const actualizarProducto = async (req, res) => {
       }
     }
     
-    // Validar precio y stock
+    // Validaciones de precio y stock
     if (precio && parseFloat(precio) <= 0) {
       return res.status(400).json({
         success: false,
@@ -370,21 +380,22 @@ const actualizarProducto = async (req, res) => {
       });
     }
     
-    // Manejar imagen nueva
+    // Si se subió una nueva imagen, reemplaza la anterior
     if (req.file) {
-      // Eliminar imagen anterior si existe
+      // Si el producto ya tenía una imagen, la elimina del disco
       if (producto.imagen) {
         const rutaImagenAnterior = path.join(__dirname, '../uploads', producto.imagen);
         try {
-          await fs.unlink(rutaImagenAnterior);
+          await fs.unlink(rutaImagenAnterior);   // Elimina el archivo anterior
         } catch (err) {
           console.error('Error al eliminar imagen anterior:', err);
         }
       }
+      // Asigna el nombre de la nueva imagen
       producto.imagen = req.file.filename;
     }
     
-    // ACTUALIZAR CAMPOS
+    // Actualiza SOLO los campos que se enviaron (si no se envían, no cambian)
     if (nombre !== undefined) producto.nombre = nombre;
     if (descripcion !== undefined) producto.descripcion = descripcion;
     if (precio !== undefined) producto.precio = parseFloat(precio);
@@ -393,10 +404,10 @@ const actualizarProducto = async (req, res) => {
     if (subcategoriaId !== undefined) producto.subcategoriaId = parseInt(subcategoriaId);
     if (activo !== undefined) producto.activo = activo;
     
-    // Guardar cambios
+    // save() ejecuta UPDATE en la BD
     await producto.save();
     
-    // Recargar con relaciones
+    // Recarga el producto con sus relaciones actualizadas
     await producto.reload({
       include: [
         { model: Categoria, as: 'categoria', attributes: ['id', 'nombre'] },
@@ -404,7 +415,7 @@ const actualizarProducto = async (req, res) => {
       ]
     });
     
-    // RESPUESTA EXITOSA
+    // Responde con el producto actualizado
     res.json({
       success: true,
       message: 'Producto actualizado exitosamente',
@@ -416,7 +427,7 @@ const actualizarProducto = async (req, res) => {
   } catch (error) {
     console.error('Error en actualizarProducto:', error);
     
-    // Si hubo error, eliminar la nueva imagen subida
+    // Si hubo error y se subió una nueva imagen, la elimina para no dejar archivos huérfanos
     if (req.file) {
       const rutaImagen = path.join(__dirname, '../uploads', req.file.filename);
       try {
@@ -443,17 +454,16 @@ const actualizarProducto = async (req, res) => {
 };
 
 /**
- * Activar/Desactivar producto
+ * Activar/Desactivar producto (toggle) (admin)
  * 
- * PATCH /api/admin/productos/:id/toggle
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: PATCH /api/admin/productos/:id/toggle
+ * Invierte el estado activo del producto.
  */
 const toggleProducto = async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Busca el producto por ID
     const producto = await Producto.findByPk(id);
     
     if (!producto) {
@@ -463,9 +473,11 @@ const toggleProducto = async (req, res) => {
       });
     }
     
+    // Invierte el estado: true → false, false → true
     producto.activo = !producto.activo;
     await producto.save();
     
+    // Responde indicando el nuevo estado
     res.json({
       success: true,
       message: `Producto ${producto.activo ? 'activado' : 'desactivado'} exitosamente`,
@@ -485,13 +497,11 @@ const toggleProducto = async (req, res) => {
 };
 
 /**
- * Eliminar producto
+ * Eliminar producto (admin)
  * 
- * DELETE /api/admin/productos/:id
- * Elimina el producto y su imagen
- * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * Ruta: DELETE /api/admin/productos/:id
+ * Elimina el producto de la BD. El hook beforeDestroy del modelo
+ * se encarga de eliminar la imagen del disco automáticamente.
  */
 const eliminarProducto = async (req, res) => {
   try {
@@ -506,7 +516,8 @@ const eliminarProducto = async (req, res) => {
       });
     }
     
-    // El hook beforeDestroy se encargará de eliminar la imagen
+    // destroy() ejecuta DELETE FROM Producto WHERE id = :id
+    // El hook beforeDestroy del modelo elimina la imagen del disco automáticamente.
     await producto.destroy();
     
     res.json({
@@ -525,19 +536,21 @@ const eliminarProducto = async (req, res) => {
 };
 
 /**
- * Actualizar stock de un producto
+ * Actualizar stock de un producto (admin)
  * 
- * PATCH /api/admin/productos/:id/stock
- * Body: { cantidad, operacion: 'aumentar' | 'reducir' | 'establecer' }
+ * Ruta: PATCH /api/admin/productos/:id/stock
+ * Body JSON: { cantidad, operacion: 'aumentar' | 'reducir' | 'establecer' }
  * 
- * @param {Object} req - Request de Express
- * @param {Object} res - Response de Express
+ * - aumentar: suma la cantidad al stock actual
+ * - reducir: resta la cantidad del stock actual
+ * - establecer: reemplaza el stock con la cantidad dada
  */
 const actualizarStock = async (req, res) => {
   try {
     const { id } = req.params;
-    const { cantidad, operacion } = req.body;
+    const { cantidad, operacion } = req.body;   // Datos del body JSON
     
+    // Valida que se enviaron ambos campos
     if (!cantidad || !operacion) {
       return res.status(400).json({
         success: false,
@@ -545,6 +558,7 @@ const actualizarStock = async (req, res) => {
       });
     }
     
+    // Convierte la cantidad a número entero
     const cantidadNum = parseInt(cantidad);
     if (cantidadNum < 0) {
       return res.status(400).json({
@@ -553,6 +567,7 @@ const actualizarStock = async (req, res) => {
       });
     }
     
+    // Busca el producto por ID
     const producto = await Producto.findByPk(id);
     
     if (!producto) {
@@ -562,40 +577,50 @@ const actualizarStock = async (req, res) => {
       });
     }
     
-    let nuevoStock;
+    let nuevoStock;   // Variable para almacenar el stock resultante
     
+    // Según la operación, calcula el nuevo stock
     switch (operacion) {
       case 'aumentar':
+        // aumentarStock() es un método del modelo Producto que suma cantidades
         nuevoStock = producto.aumentarStock(cantidadNum);
         break;
       case 'reducir':
+        // Verifica que haya suficiente stock antes de reducir
         if (cantidadNum > producto.stock) {
           return res.status(400).json({
             success: false,
             message: `No hay suficiente stock. Stock actual: ${producto.stock}`
           });
         }
+        // reducirStock() es un método del modelo Producto que resta cantidades
         nuevoStock = producto.reducirStock(cantidadNum);
         break;
       case 'establecer':
+        // Simplemente establece el valor directamente
         nuevoStock = cantidadNum;
         break;
       default:
+        // Si la operación no es válida
         return res.status(400).json({
           success: false,
           message: 'Operación inválida. Usa: aumentar, reducir o establecer'
         });
     }
     
+    // Asigna el nuevo stock y guarda en la BD
     producto.stock = nuevoStock;
     await producto.save();
     
+    // Responde con el resultado de la operación
     res.json({
       success: true,
+      // Ternario anidado para personalizar el mensaje según la operación
       message: `Stock ${operacion === 'aumentar' ? 'aumentado' : operacion === 'reducir' ? 'reducido' : 'establecido'} exitosamente`,
       data: {
         productoId: producto.id,
         nombre: producto.nombre,
+        // Calcula el stock anterior según la operación realizada (null para 'establecer')
         stockAnterior: operacion === 'establecer' ? null : (operacion === 'aumentar' ? producto.stock - cantidadNum : producto.stock + cantidadNum),
         stockNuevo: producto.stock
       }
@@ -611,13 +636,13 @@ const actualizarStock = async (req, res) => {
   }
 };
 
-// Exportar todos los controladores
+// Exporta todas las funciones del controlador para usarlas en las rutas de admin.
 module.exports = {
-  getProductos,
-  getProductoById,
-  crearProducto,
-  actualizarProducto,
-  toggleProducto,
-  eliminarProducto,
-  actualizarStock
+  getProductos,          // GET    /api/admin/productos - Listar todos
+  getProductoById,       // GET    /api/admin/productos/:id - Ver uno
+  crearProducto,         // POST   /api/admin/productos - Crear nuevo
+  actualizarProducto,    // PUT    /api/admin/productos/:id - Actualizar
+  toggleProducto,        // PATCH  /api/admin/productos/:id/toggle - Activar/Desactivar
+  eliminarProducto,      // DELETE /api/admin/productos/:id - Eliminar
+  actualizarStock        // PATCH  /api/admin/productos/:id/stock - Gestionar stock
 };

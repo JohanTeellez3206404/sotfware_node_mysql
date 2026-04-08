@@ -2,122 +2,117 @@
  * ============================================
  * MODELO PRODUCTO
  * ============================================
- * Define la tabla 'Producto' en la base de datos
- * Almacena información de productos con imagen, precio, stock, etc.
+ * Define la estructura de la tabla 'productos' en MySQL usando Sequelize ORM.
+ * Cada fila representa un producto del e-commerce con nombre, precio, stock, imagen, etc.
+ * Un producto pertenece a UNA categoría y UNA subcategoría (relaciones belongsTo en models/index.js).
+ * La imagen se guarda como nombre de archivo; el archivo físico está en la carpeta uploads/.
+ * Hooks validan consistencia categoría-subcategoría y eliminan la imagen al borrar el producto.
  */
 
-// Importar DataTypes de Sequelize
+// Importa DataTypes de la librería 'sequelize' (paquete npm)
+// Define los tipos de columnas: INTEGER, STRING, TEXT, DECIMAL, BOOLEAN, etc.
 const { DataTypes } = require('sequelize');
 
-// Importar instancia de sequelize
+// Importa la instancia 'sequelize' (conexión activa a MySQL) desde config/database.js
 const { sequelize } = require('../config/database');
 
 /**
- * Definir el modelo Producto
+ * sequelize.define() crea el modelo que mapea a la tabla 'productos'.
+ * 'Producto' → nombre interno del modelo
  */
 const Producto = sequelize.define('Producto', {
   // ==========================================
-  // CAMPOS DE LA TABLA
+  // COLUMNAS DE LA TABLA 'productos'
   // ==========================================
   
-  /**
-   * id - Identificador único (PRIMARY KEY)
-   */
+  // Columna 'id' → Identificador único de cada producto
   id: {
-    type: DataTypes.INTEGER,
-    primaryKey: true,
-    autoIncrement: true,
-    allowNull: false
+    type: DataTypes.INTEGER,           // Tipo INT en MySQL
+    primaryKey: true,                  // Clave primaria (PK)
+    autoIncrement: true,               // Auto-incrementa: 1, 2, 3...
+    allowNull: false                   // No permite NULL
   },
 
-  /**
-   * nombre - Nombre del producto
-   */
+  // Columna 'nombre' → Nombre visible del producto
+  // Ejemplo: "Laptop Dell Inspiron 15", "Camiseta Nike Dri-FIT"
   nombre: {
-    type: DataTypes.STRING(200),
-    allowNull: false,
-    validate: {
-      notEmpty: {
+    type: DataTypes.STRING(200),       // VARCHAR(200) en MySQL → máximo 200 caracteres
+    allowNull: false,                  // Obligatorio
+    validate: {                        // Validaciones de Sequelize (a nivel de aplicación)
+      notEmpty: {                      // No permite cadena vacía ""
         msg: 'El nombre del producto no puede estar vacío'
       },
-      len: {
-        args: [3, 200],
+      len: {                           // Valida longitud
+        args: [3, 200],                // Entre 3 y 200 caracteres
         msg: 'El nombre debe tener entre 3 y 200 caracteres'
       }
     }
   },
 
-  /**
-   * descripcion - Descripción detallada del producto
-   */
+  // Columna 'descripcion' → Descripción detallada del producto (opcional)
   descripcion: {
-    type: DataTypes.TEXT,
-    allowNull: true
+    type: DataTypes.TEXT,              // TEXT en MySQL → texto largo sin límite fijo
+    allowNull: true                   // Opcional: puede ser NULL
   },
 
-  /**
-   * precio - Precio del producto en pesos colombianos (o la moneda configurada)
-   */
+  // Columna 'precio' → Precio del producto en pesos colombianos
   precio: {
-    type: DataTypes.DECIMAL(10, 2),  // Hasta 99,999,999.99
-    allowNull: false,
+    type: DataTypes.DECIMAL(10, 2),    // DECIMAL(10,2) → hasta 99,999,999.99
+    allowNull: false,                  // Obligatorio
     validate: {
-      isDecimal: {
+      isDecimal: {                     // Valida que sea un número decimal
         msg: 'El precio debe ser un número decimal válido'
       },
-      min: {
+      min: {                           // No permite precios negativos
         args: [0],
         msg: 'El precio no puede ser negativo'
       }
     }
   },
 
-  /**
-   * stock - Cantidad disponible en inventario
-   */
+  // Columna 'stock' → Cantidad disponible en inventario
+  // Se reduce al confirmar un pedido y se aumenta al cancelar
   stock: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    defaultValue: 0,
+    type: DataTypes.INTEGER,           // Tipo INT (entero)
+    allowNull: false,                  // Obligatorio
+    defaultValue: 0,                   // Si no se especifica, empieza en 0
     validate: {
-      isInt: {
+      isInt: {                         // Valida que sea entero
         msg: 'El stock debe ser un número entero'
       },
-      min: {
+      min: {                           // No permite stock negativo
         args: [0],
         msg: 'El stock no puede ser negativo'
       }
     }
   },
 
-  /**
-   * imagen - Nombre del archivo de imagen
-   * Se guarda solo el nombre (ej: "1709578800000-producto.jpg")
-   * La ruta completa será: uploads/1709578800000-producto.jpg
-   */
+  // Columna 'imagen' → Nombre del archivo de imagen subido por Multer
+  // Solo guarda el nombre del archivo: "1709578800000-producto.jpg"
+  // La ruta completa es: uploads/1709578800000-producto.jpg (servida por Express como estático)
+  // Multer está configurado en config/multer.js
   imagen: {
-    type: DataTypes.STRING(255),
-    allowNull: true,                // Es opcional, puede no tener imagen
+    type: DataTypes.STRING(255),       // VARCHAR(255) → nombre del archivo
+    allowNull: true,                   // Opcional: un producto puede no tener imagen
     validate: {
-      is: {
-        args: /\.(jpg|jpeg|png|gif)$/i,
+      is: {                            // Valida con expresión regular (regex)
+        args: /\.(jpg|jpeg|png|gif)$/i,  // Solo extensiones de imagen permitidas
         msg: 'La imagen debe ser un archivo JPG, PNG o GIF'
       }
     }
   },
 
-  /**
-   * subcategoriaId - ID de la subcategoría a la que pertenece (FOREIGN KEY)
-   */
+  // Columna 'subcategoriaId' → Clave foránea (FK) a la tabla 'subcategorias'
+  // Indica a QUÉ subcategoría pertenece el producto
   subcategoriaId: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    references: {
-      model: 'subcategorias',
-      key: 'id'
+    type: DataTypes.INTEGER,           // Tipo INT, coincide con subcategorias.id
+    allowNull: false,                  // Obligatorio: todo producto tiene subcategoría
+    references: {                      // Define la FK en MySQL
+      model: 'subcategorias',         // Tabla referenciada
+      key: 'id'                       // Columna referenciada
     },
-    onUpdate: 'CASCADE',
-    onDelete: 'CASCADE',
+    onUpdate: 'CASCADE',              // Si cambia subcategorias.id → actualiza aquí
+    onDelete: 'CASCADE',              // Si se elimina la subcategoría → elimina productos
     validate: {
       notNull: {
         msg: 'Debe seleccionar una subcategoría'
@@ -125,16 +120,14 @@ const Producto = sequelize.define('Producto', {
     }
   },
 
-  /**
-   * categoriaId - ID de la categoría (FOREIGN KEY)
-   * Se guarda también para facilitar búsquedas y validaciones
-   * Debe coincidir con la categoría de la subcategoría
-   */
+  // Columna 'categoriaId' → Clave foránea (FK) a la tabla 'categorias'
+  // Se guarda TAMBIÉN aquí (además de en subcategoría) para facilitar búsquedas directas
+  // REGLA: Debe coincidir con la categoría de la subcategoría seleccionada (validado en hooks)
   categoriaId: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
+    type: DataTypes.INTEGER,           // Tipo INT, coincide con categorias.id
+    allowNull: false,                  // Obligatorio
     references: {
-      model: 'categorias',
+      model: 'categorias',            // Tabla referenciada
       key: 'id'
     },
     onUpdate: 'CASCADE',
@@ -146,13 +139,12 @@ const Producto = sequelize.define('Producto', {
     }
   },
 
-  /**
-   * activo - Estado del producto
-   */
+  // Columna 'activo' → Estado del producto (visible/oculto en catálogo)
+  // Si es false, no aparece en el catálogo público
   activo: {
-    type: DataTypes.BOOLEAN,
-    allowNull: false,
-    defaultValue: true
+    type: DataTypes.BOOLEAN,           // TINYINT(1) en MySQL
+    allowNull: false,                  // Obligatorio
+    defaultValue: true                 // Se crea activo por defecto
   }
 
 }, {
@@ -160,77 +152,80 @@ const Producto = sequelize.define('Producto', {
   // OPCIONES DEL MODELO
   // ==========================================
   
-  tableName: 'productos',
-  timestamps: true,
+  tableName: 'productos',             // Nombre EXACTO de la tabla en MySQL
+  timestamps: true,                   // Crea automáticamente createdAt y updatedAt
   
-  /**
-   * Índices para optimizar búsquedas
-   */
+  // Índices → aceleran las consultas SQL más frecuentes
   indexes: [
     {
-      // Índice para buscar productos por subcategoría
+      // Índice en 'subcategoriaId' → acelera filtrar productos por subcategoría
       fields: ['subcategoriaId']
     },
     {
-      // Índice para buscar productos por categoría
+      // Índice en 'categoriaId' → acelera filtrar productos por categoría
       fields: ['categoriaId']
     },
     {
-      // Índice para buscar productos activos
+      // Índice en 'activo' → acelera filtrar solo productos activos
       fields: ['activo']
     },
     {
-      // Índice para buscar por nombre (búsquedas)
+      // Índice en 'nombre' → acelera búsquedas por nombre de producto
       fields: ['nombre']
     }
   ],
   
-  /**
-   * HOOKS - Acciones automáticas
-   */
+  // HOOKS → funciones automáticas del ciclo de vida del registro
   hooks: {
     /**
-     * beforeCreate - Se ejecuta ANTES de crear un producto
-     * Valida que subcategoría y categoría estén activas y sean consistentes
+     * beforeCreate → Se ejecuta ANTES de insertar un producto nuevo
+     * Valida que la subcategoría y categoría existan, estén activas,
+     * y que la subcategoría realmente pertenezca a la categoría indicada.
      */
     beforeCreate: async (producto) => {
+      // Importa modelos aquí dentro para evitar dependencias circulares
       const Categoria = require('./Categoria');
       const Subcategoria = require('./Subcategoria');
       
-      // Buscar la subcategoría
+      // Busca la subcategoría en la BD
       const subcategoria = await Subcategoria.findByPk(producto.subcategoriaId);
       
+      // Valida que la subcategoría exista
       if (!subcategoria) {
         throw new Error('La subcategoría seleccionada no existe');
       }
       
+      // Valida que la subcategoría esté activa
       if (!subcategoria.activo) {
         throw new Error('No se puede crear un producto en una subcategoría inactiva');
       }
       
-      // Buscar la categoría
+      // Busca la categoría en la BD
       const categoria = await Categoria.findByPk(producto.categoriaId);
       
+      // Valida que la categoría exista
       if (!categoria) {
         throw new Error('La categoría seleccionada no existe');
       }
       
+      // Valida que la categoría esté activa
       if (!categoria.activo) {
         throw new Error('No se puede crear un producto en una categoría inactiva');
       }
       
-      // Validar que la subcategoría pertenezca a la categoría
+      // CONSISTENCIA: La subcategoría debe pertenecer a la categoría elegida
+      // subcategoria.categoriaId debe ser igual a producto.categoriaId
       if (subcategoria.categoriaId !== producto.categoriaId) {
         throw new Error('La subcategoría no pertenece a la categoría seleccionada');
       }
     },
 
     /**
-     * beforeUpdate - Se ejecuta ANTES de actualizar un producto
-     * Valida consistencia si se cambia subcategoría o categoría
+     * beforeUpdate → Se ejecuta ANTES de actualizar un producto existente
+     * Si se cambió subcategoría o categoría, valida la consistencia
      */
     beforeUpdate: async (producto) => {
-      // Si se cambió la subcategoría o categoría, validar consistencia
+      // changed() retorna true si el campo fue modificado
       if (producto.changed('subcategoriaId') || producto.changed('categoriaId')) {
         const Subcategoria = require('./Subcategoria');
         
@@ -240,6 +235,7 @@ const Producto = sequelize.define('Producto', {
           throw new Error('La subcategoría seleccionada no existe');
         }
         
+        // Verifica consistencia subcategoría-categoría
         if (subcategoria.categoriaId !== producto.categoriaId) {
           throw new Error('La subcategoría no pertenece a la categoría seleccionada');
         }
@@ -247,14 +243,16 @@ const Producto = sequelize.define('Producto', {
     },
 
     /**
-     * beforeDestroy - Se ejecuta ANTES de eliminar un producto
-     * Elimina la imagen del servidor si existe
+     * beforeDestroy → Se ejecuta ANTES de eliminar un producto
+     * Elimina el archivo de imagen del servidor (carpeta uploads/) si existe.
+     * deleteFile() está definido en config/multer.js
      */
     beforeDestroy: async (producto) => {
-      if (producto.imagen) {
+      if (producto.imagen) {               // Solo si el producto tiene imagen
+        // Importa deleteFile desde config/multer.js
         const { deleteFile } = require('../config/multer');
         
-        // Intentar eliminar la imagen del servidor
+        // Intenta eliminar el archivo físico del servidor
         const eliminado = deleteFile(producto.imagen);
         
         if (eliminado) {
@@ -268,62 +266,57 @@ const Producto = sequelize.define('Producto', {
 // ==========================================
 // MÉTODOS DE INSTANCIA
 // ==========================================
+// Se llaman sobre UN producto: producto.hayStock(5)
 
 /**
- * Método para obtener la URL completa de la imagen
- * 
- * @returns {string|null} - URL de la imagen o null si no tiene
- * 
- * Ejemplo: http://localhost:5000/uploads/1709578800000-producto.jpg
+ * obtenerUrlImagen() → Construye la URL completa de la imagen del producto
+ * Combina la URL base del servidor + la ruta de uploads + el nombre del archivo
+ * @returns {string|null} URL completa o null si no tiene imagen
+ * Ejemplo: "http://localhost:5000/uploads/1709578800000-producto.jpg"
  */
 Producto.prototype.obtenerUrlImagen = function() {
-  if (!this.imagen) {
+  if (!this.imagen) {                      // Si no tiene imagen → retorna null
     return null;
   }
   
+  // Toma la URL base de la variable de entorno o usa localhost por defecto
   const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5000';
-  return `${baseUrl}/uploads/${this.imagen}`;
+  return `${baseUrl}/uploads/${this.imagen}`;  // Construye la URL completa
 };
 
 /**
- * Método para verificar si hay stock disponible
- * 
- * @param {number} cantidad - Cantidad deseada
- * @returns {boolean} - true si hay stock, false si no
+ * hayStock() → Verifica si hay suficiente stock para la cantidad solicitada
+ * @param {number} cantidad - Cantidad que se quiere comprar (default: 1)
+ * @returns {boolean} true si stock >= cantidad, false si no
  */
 Producto.prototype.hayStock = function(cantidad = 1) {
-  return this.stock >= cantidad;
+  return this.stock >= cantidad;           // Compara stock actual vs cantidad deseada
 };
 
 /**
- * Método para reducir el stock
- * Útil al realizar una venta
- * 
- * @param {number} cantidad - Cantidad a reducir
- * @returns {Promise<Producto>} - Producto actualizado
+ * reducirStock() → Resta unidades del stock (se usa al confirmar una compra)
+ * @param {number} cantidad - Unidades a restar
+ * @returns {Promise<Producto>} Producto actualizado
  */
 Producto.prototype.reducirStock = async function(cantidad) {
-  if (!this.hayStock(cantidad)) {
+  if (!this.hayStock(cantidad)) {          // Valida que haya suficiente stock
     throw new Error('Stock insuficiente');
   }
   
-  this.stock -= cantidad;
-  return await this.save();
+  this.stock -= cantidad;                  // Resta la cantidad del stock
+  return await this.save();                // save() ejecuta UPDATE en la BD
 };
 
 /**
- * Método para aumentar el stock
- * Útil al cancelar una venta o recibir inventario
- * 
- * @param {number} cantidad - Cantidad a aumentar
- * @returns {Promise<Producto>} - Producto actualizado
+ * aumentarStock() → Suma unidades al stock (se usa al cancelar un pedido o recibir inventario)
+ * @param {number} cantidad - Unidades a sumar
+ * @returns {Promise<Producto>} Producto actualizado
  */
 Producto.prototype.aumentarStock = async function(cantidad) {
-  this.stock += cantidad;
-  return await this.save();
+  this.stock += cantidad;                  // Suma la cantidad al stock
+  return await this.save();                // Guarda en la BD
 };
 
-// ==========================================
-// EXPORTAR MODELO
-// ==========================================
+// Exporta el modelo Producto para usarlo en controladores, otros modelos y seeders
+// Se importa como: const Producto = require('./Producto')
 module.exports = Producto;
